@@ -31,6 +31,9 @@ public class AnthropicMessagesHttpHandler {
 
   private static final Logger log = LoggerFactory.getLogger(AnthropicMessagesHttpHandler.class);
 
+  /** 落库用的来源接口标识 */
+  private static final String API = "anthropic.messages";
+
   HttpClient client = HttpClient.newHttpClient();
 
   private final ConversationStore conversationStore;
@@ -42,7 +45,7 @@ public class AnthropicMessagesHttpHandler {
   }
 
   /** 上游响应里的 usage（流式响应从 SSE 分片中尽力提取） */
-  private record Usage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {}
+  private record Usage(Integer promptTokens, Integer completionTokens, Integer totalTokens, Integer cacheTokens) {}
 
   public void handle(Context ctx) throws IOException, InterruptedException {
     log.info("Handling request content length: {}", ctx.contentLength());
@@ -147,10 +150,11 @@ public class AnthropicMessagesHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(sessionId, model, stream, statusCode, requestBody, responseText,
+      conversationStore.log(API, sessionId, model, stream, statusCode, requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),
           usage == null ? null : usage.totalTokens(),
+          usage == null ? null : usage.cacheTokens(),
           System.currentTimeMillis() - start, errorMessage, chatMessages);
     }
   }
@@ -188,18 +192,19 @@ public class AnthropicMessagesHttpHandler {
     }
   }
 
-  /** Anthropic usage 字段为 input_tokens / output_tokens，无 total_tokens（自行相加） */
+  /** Anthropic usage 字段为 input_tokens / output_tokens，无 total_tokens（自行相加）；cache_tokens 取 cache_read_input_tokens */
   private static Usage toUsage(JSONObject usageJson) {
     Integer input = usageJson.getInteger("input_tokens");
     Integer output = usageJson.getInteger("output_tokens");
     Integer total = input != null && output != null ? input + output : null;
-    return new Usage(input, output, total);
+    return new Usage(input, output, total, usageJson.getInteger("cache_read_input_tokens"));
   }
 
-  /** 流式响应：input_tokens 在 message_start 的 message.usage，output_tokens 取 message_delta usage 的累计值 */
+  /** 流式响应：input_tokens / cache_read 在 message_start 的 message.usage，output_tokens 取 message_delta usage 的累计值 */
   private static Usage extractStreamUsage(String sse) {
     Integer input = null;
     Integer output = null;
+    Integer cacheRead = null;
     for (String line : sse.split("\n")) {
       line = line.trim();
       if (!line.startsWith("data:")) {
@@ -217,14 +222,19 @@ public class AnthropicMessagesHttpHandler {
           JSONObject usageJson = message != null ? message.getJSONObject("usage") : null;
           if (usageJson != null) {
             input = usageJson.getInteger("input_tokens");
+            cacheRead = usageJson.getInteger("cache_read_input_tokens");
           }
         } else if ("message_delta".equals(type)) {
-          // 每个 message_delta 携带累计 output_tokens；新版 API 也可能带累计 input_tokens
+          // 每个 message_delta 携带累计 usage；新版 API 也可能带累计 input_tokens / cache 字段
           JSONObject usageJson = event.getJSONObject("usage");
           if (usageJson != null) {
             Integer deltaInput = usageJson.getInteger("input_tokens");
             if (deltaInput != null) {
               input = deltaInput;
+            }
+            Integer deltaCache = usageJson.getInteger("cache_read_input_tokens");
+            if (deltaCache != null) {
+              cacheRead = deltaCache;
             }
             Integer deltaOutput = usageJson.getInteger("output_tokens");
             if (deltaOutput != null) {
@@ -240,6 +250,6 @@ public class AnthropicMessagesHttpHandler {
       return null;
     }
     Integer total = input != null && output != null ? input + output : null;
-    return new Usage(input, output, total);
+    return new Usage(input, output, total, cacheRead);
   }
 }

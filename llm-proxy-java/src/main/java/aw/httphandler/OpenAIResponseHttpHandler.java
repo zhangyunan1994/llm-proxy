@@ -31,6 +31,9 @@ public class OpenAIResponseHttpHandler {
 
   private static final Logger log = LoggerFactory.getLogger(OpenAIResponseHttpHandler.class);
 
+  /** 落库用的来源接口标识 */
+  private static final String API = "openai.responses";
+
   HttpClient client = HttpClient.newHttpClient();
 
   private final ConversationStore conversationStore;
@@ -42,7 +45,7 @@ public class OpenAIResponseHttpHandler {
   }
 
   /** 上游响应里的 usage（流式响应从 SSE 分片中尽力提取） */
-  private record Usage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {}
+  private record Usage(Integer promptTokens, Integer completionTokens, Integer totalTokens, Integer cacheTokens) {}
 
   public void handle(Context ctx) throws IOException, InterruptedException {
     log.info("Handling request content length: {}", ctx.contentLength());
@@ -147,10 +150,11 @@ public class OpenAIResponseHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(sessionId, model, stream, statusCode, requestBody, responseText,
+      conversationStore.log(API, sessionId, model, stream, statusCode, requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),
           usage == null ? null : usage.totalTokens(),
+          usage == null ? null : usage.cacheTokens(),
           System.currentTimeMillis() - start, errorMessage, chatMessages);
     }
   }
@@ -181,12 +185,19 @@ public class OpenAIResponseHttpHandler {
       if (usage == null) {
         return null;
       }
-      return new Usage(usage.getInteger("input_tokens"),
-          usage.getInteger("output_tokens"), usage.getInteger("total_tokens"));
+      return toUsage(usage);
     } catch (Exception e) {
       log.debug("解析响应 usage 失败", e);
       return null;
     }
+  }
+
+  /** cache_tokens 取 input_tokens_details.cached_tokens（命中缓存的输入 token 数） */
+  private static Usage toUsage(JSONObject usageJson) {
+    JSONObject details = usageJson.getJSONObject("input_tokens_details");
+    Integer cached = details != null ? details.getInteger("cached_tokens") : null;
+    return new Usage(usageJson.getInteger("input_tokens"),
+        usageJson.getInteger("output_tokens"), usageJson.getInteger("total_tokens"), cached);
   }
 
   /** 流式响应：usage 在 response.completed 事件的 response.usage 里（Responses API 流式无需 stream_options） */
@@ -210,8 +221,7 @@ public class OpenAIResponseHttpHandler {
           usageJson = event.getJSONObject("usage");
         }
         if (usageJson != null) {
-          usage = new Usage(usageJson.getInteger("input_tokens"),
-              usageJson.getInteger("output_tokens"), usageJson.getInteger("total_tokens"));
+          usage = toUsage(usageJson);
         }
       } catch (Exception ignore) {
         // 非 JSON 行直接跳过

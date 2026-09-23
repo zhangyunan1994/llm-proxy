@@ -15,8 +15,9 @@ import org.slf4j.LoggerFactory;
 
 /**
  * 对话记录存储。
- * 每次 /v1/chat/completions 请求写一条 conversations，请求 messages 数组逐条写 messages。
- * 表结构见 resources/schema.sql，构造时自动执行（幂等，CREATE IF NOT EXISTS）。
+ * 每次代理请求写一条 conversations（api 区分来源接口），请求 messages 数组逐条写 messages。
+ * 表结构见 resources/schema.sql，构造时自动执行（幂等，CREATE IF NOT EXISTS），
+ * 并为旧库补齐新增列（ALTER TABLE ADD COLUMN，无则跳过）。
  */
 public class ConversationStore {
 
@@ -26,9 +27,9 @@ public class ConversationStore {
   public record ChatMessage(int seq, String role, String content) {}
 
   private static final String INSERT_CONVERSATION = """
-      INSERT INTO conversations(session_id, model, stream, status_code, request_body, response_body,
-                                prompt_tokens, completion_tokens, total_tokens, latency_ms, error_message)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO conversations(api, session_id, model, stream, status_code, request_body, response_body,
+                                prompt_tokens, completion_tokens, total_tokens, cache_tokens, latency_ms, error_message)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """;
 
   private static final String INSERT_MESSAGE = """
@@ -52,8 +53,28 @@ public class ConversationStore {
           st.execute(stmt);
         }
       }
+      // 旧库升级：SQLite 的 ALTER TABLE 不支持 IF NOT EXISTS，先查 pragma 再补列
+      addColumnIfMissing(conn, "conversations", "api", "TEXT");
+      addColumnIfMissing(conn, "conversations", "cache_tokens", "INTEGER");
     } catch (Exception e) {
       throw new IllegalStateException("初始化对话记录表失败", e);
+    }
+  }
+
+  private static void addColumnIfMissing(Connection conn, String table, String column, String type) throws SQLException {
+    boolean exists;
+    try (PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")) {
+      ps.setString(1, table);
+      ps.setString(2, column);
+      try (ResultSet rs = ps.executeQuery()) {
+        exists = rs.next();
+      }
+    }
+    if (!exists) {
+      try (Statement st = conn.createStatement()) {
+        st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
+        log.info("已为表 {} 补充列 {} {}", table, column, type);
+      }
     }
   }
 
@@ -61,32 +82,34 @@ public class ConversationStore {
    * 写入一次请求的完整记录（单事务）。
    * 数据库异常只记日志不上抛——记录失败不能影响代理转发。
    */
-  public void log(String sessionId, String model, boolean stream, Integer statusCode,
+  public void log(String api, String sessionId, String model, boolean stream, Integer statusCode,
       String requestBody, String responseBody, Integer promptTokens, Integer completionTokens,
-      Integer totalTokens, Long latencyMs, String errorMessage, List<ChatMessage> messages) {
+      Integer totalTokens, Integer cacheTokens, Long latencyMs, String errorMessage, List<ChatMessage> messages) {
     try (Connection conn = open()) {
       conn.setAutoCommit(false);
       long conversationId;
       try (PreparedStatement ps = conn.prepareStatement(INSERT_CONVERSATION, Statement.RETURN_GENERATED_KEYS)) {
-        ps.setString(1, sessionId);
-        ps.setString(2, model);
-        ps.setInt(3, stream ? 1 : 0);
+        ps.setString(1, api);
+        ps.setString(2, sessionId);
+        ps.setString(3, model);
+        ps.setInt(4, stream ? 1 : 0);
         if (statusCode != null) {
-          ps.setInt(4, statusCode);
+          ps.setInt(5, statusCode);
         } else {
-          ps.setNull(4, java.sql.Types.INTEGER);
+          ps.setNull(5, java.sql.Types.INTEGER);
         }
-        ps.setString(5, requestBody);
-        ps.setString(6, responseBody);
-        setNullableInt(ps, 7, promptTokens);
-        setNullableInt(ps, 8, completionTokens);
-        setNullableInt(ps, 9, totalTokens);
+        ps.setString(6, requestBody);
+        ps.setString(7, responseBody);
+        setNullableInt(ps, 8, promptTokens);
+        setNullableInt(ps, 9, completionTokens);
+        setNullableInt(ps, 10, totalTokens);
+        setNullableInt(ps, 11, cacheTokens);
         if (latencyMs != null) {
-          ps.setLong(10, latencyMs);
+          ps.setLong(12, latencyMs);
         } else {
-          ps.setNull(10, java.sql.Types.INTEGER);
+          ps.setNull(12, java.sql.Types.INTEGER);
         }
-        ps.setString(11, errorMessage);
+        ps.setString(13, errorMessage);
         ps.executeUpdate();
         try (ResultSet keys = ps.getGeneratedKeys()) {
           conversationId = keys.next() ? keys.getLong(1) : -1;

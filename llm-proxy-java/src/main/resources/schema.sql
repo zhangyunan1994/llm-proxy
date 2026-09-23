@@ -1,18 +1,20 @@
 -- 对话记录表结构（SQLite）
 -- 应用侧每次建连接后建议执行: PRAGMA foreign_keys = ON
 
--- 每次调用 /v1/chat/completions 记录一条
+-- 每次代理转发请求记录一条（api 区分来源接口）
 CREATE TABLE IF NOT EXISTS conversations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    api               TEXT,                        -- 请求来源接口: openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank
     session_id        TEXT,                        -- 客户端会话标识（如 X-Session-Id 请求头），可空
     model             TEXT NOT NULL,               -- 请求的模型名
     stream            INTEGER NOT NULL DEFAULT 0,  -- 是否流式请求: 0/1
     status_code       INTEGER,                     -- 上游响应状态码
     request_body      TEXT,                        -- 完整请求 JSON
     response_body     TEXT,                        -- 完整响应 JSON（流式时为 SSE 拼接结果）
-    prompt_tokens     INTEGER,                     -- usage.prompt_tokens
-    completion_tokens INTEGER,                     -- usage.completion_tokens
+    prompt_tokens     INTEGER,                     -- usage.prompt_tokens / input_tokens
+    completion_tokens INTEGER,                     -- usage.completion_tokens / output_tokens
     total_tokens      INTEGER,                     -- usage.total_tokens
+    cache_tokens      INTEGER,                     -- 命中缓存 token 数（OpenAI cached_tokens / Anthropic cache_read_input_tokens）
     latency_ms        INTEGER,                     -- 上游耗时（毫秒）
     error_message     TEXT,                        -- 失败原因
     created_at        TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))

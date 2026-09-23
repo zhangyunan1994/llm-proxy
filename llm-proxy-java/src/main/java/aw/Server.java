@@ -44,8 +44,8 @@ public class Server {
     OpenAIChatCompletionsHttpHandler openAIChatCompletionsHttpHandler = new OpenAIChatCompletionsHttpHandler(conversationStore, proxyConfig);
     OpenAIResponseHttpHandler openAIResponseHttpHandler = new OpenAIResponseHttpHandler(conversationStore, proxyConfig);
     AnthropicMessagesHttpHandler anthropicMessagesHttpHandler = new AnthropicMessagesHttpHandler(conversationStore, proxyConfig);
-    EmbeddingsHttpHandler embeddingsHttpHandler = new EmbeddingsHttpHandler(proxyConfig);
-    RerankHttpHandler rerankHttpHandler = new RerankHttpHandler(proxyConfig);
+    EmbeddingsHttpHandler embeddingsHttpHandler = new EmbeddingsHttpHandler(conversationStore, proxyConfig);
+    RerankHttpHandler rerankHttpHandler = new RerankHttpHandler(conversationStore, proxyConfig);
     ModelsHttpHandler modelsHttpHandler = new ModelsHttpHandler(proxyConfig);
 
 
