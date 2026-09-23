@@ -65,5 +65,14 @@
         </configuration>
       </plugin>
     </plugins>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <excludes>
+          <!-- 真实密钥配置不进 classpath/构建产物，运行时从 ./config.yaml 或 -Dllm-proxy.config 读取 -->
+          <exclude>config.yaml</exclude>
+        </excludes>
+      </resource>
+    </resources>
   </build>
 </project>
