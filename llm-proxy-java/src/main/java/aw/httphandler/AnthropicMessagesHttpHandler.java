@@ -24,7 +24,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * POST /v1/chat/completions
+ * POST /v1/messages
+ * Anthropic Messages API
  */
 public class AnthropicMessagesHttpHandler {
 
@@ -180,17 +181,25 @@ public class AnthropicMessagesHttpHandler {
       if (usage == null) {
         return null;
       }
-      return new Usage(usage.getInteger("prompt_tokens"),
-          usage.getInteger("completion_tokens"), usage.getInteger("total_tokens"));
+      return toUsage(usage);
     } catch (Exception e) {
       log.debug("解析响应 usage 失败", e);
       return null;
     }
   }
 
-  /** 流式响应：扫描 SSE data 行，取最后一个带 usage 的分片（需 stream_options.include_usage） */
+  /** Anthropic usage 字段为 input_tokens / output_tokens，无 total_tokens（自行相加） */
+  private static Usage toUsage(JSONObject usageJson) {
+    Integer input = usageJson.getInteger("input_tokens");
+    Integer output = usageJson.getInteger("output_tokens");
+    Integer total = input != null && output != null ? input + output : null;
+    return new Usage(input, output, total);
+  }
+
+  /** 流式响应：input_tokens 在 message_start 的 message.usage，output_tokens 取 message_delta usage 的累计值 */
   private static Usage extractStreamUsage(String sse) {
-    Usage usage = null;
+    Integer input = null;
+    Integer output = null;
     for (String line : sse.split("\n")) {
       line = line.trim();
       if (!line.startsWith("data:")) {
@@ -201,15 +210,36 @@ public class AnthropicMessagesHttpHandler {
         continue;
       }
       try {
-        JSONObject usageJson = JSON.parseObject(payload).getJSONObject("usage");
-        if (usageJson != null) {
-          usage = new Usage(usageJson.getInteger("prompt_tokens"),
-              usageJson.getInteger("completion_tokens"), usageJson.getInteger("total_tokens"));
+        JSONObject event = JSON.parseObject(payload);
+        String type = event.getString("type");
+        if ("message_start".equals(type)) {
+          JSONObject message = event.getJSONObject("message");
+          JSONObject usageJson = message != null ? message.getJSONObject("usage") : null;
+          if (usageJson != null) {
+            input = usageJson.getInteger("input_tokens");
+          }
+        } else if ("message_delta".equals(type)) {
+          // 每个 message_delta 携带累计 output_tokens；新版 API 也可能带累计 input_tokens
+          JSONObject usageJson = event.getJSONObject("usage");
+          if (usageJson != null) {
+            Integer deltaInput = usageJson.getInteger("input_tokens");
+            if (deltaInput != null) {
+              input = deltaInput;
+            }
+            Integer deltaOutput = usageJson.getInteger("output_tokens");
+            if (deltaOutput != null) {
+              output = deltaOutput;
+            }
+          }
         }
       } catch (Exception ignore) {
         // 非 JSON 行直接跳过
       }
     }
-    return usage;
+    if (input == null && output == null) {
+      return null;
+    }
+    Integer total = input != null && output != null ? input + output : null;
+    return new Usage(input, output, total);
   }
 }

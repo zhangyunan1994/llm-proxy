@@ -174,22 +174,22 @@ public class OpenAIResponseHttpHandler {
     return list;
   }
 
-  /** 非流式响应：直接解析 usage 字段 */
+  /** 非流式响应：直接解析 usage 字段（Responses API 字段为 input_tokens / output_tokens / total_tokens） */
   private static Usage extractJsonUsage(String responseBody) {
     try {
       JSONObject usage = JSON.parseObject(responseBody).getJSONObject("usage");
       if (usage == null) {
         return null;
       }
-      return new Usage(usage.getInteger("prompt_tokens"),
-          usage.getInteger("completion_tokens"), usage.getInteger("total_tokens"));
+      return new Usage(usage.getInteger("input_tokens"),
+          usage.getInteger("output_tokens"), usage.getInteger("total_tokens"));
     } catch (Exception e) {
       log.debug("解析响应 usage 失败", e);
       return null;
     }
   }
 
-  /** 流式响应：扫描 SSE data 行，取最后一个带 usage 的分片（需 stream_options.include_usage） */
+  /** 流式响应：usage 在 response.completed 事件的 response.usage 里（Responses API 流式无需 stream_options） */
   private static Usage extractStreamUsage(String sse) {
     Usage usage = null;
     for (String line : sse.split("\n")) {
@@ -202,10 +202,16 @@ public class OpenAIResponseHttpHandler {
         continue;
       }
       try {
-        JSONObject usageJson = JSON.parseObject(payload).getJSONObject("usage");
+        JSONObject event = JSON.parseObject(payload);
+        JSONObject response = event.getJSONObject("response");
+        JSONObject usageJson = response != null ? response.getJSONObject("usage") : null;
+        if (usageJson == null) {
+          // 兼容部分网关把 usage 放在事件顶层
+          usageJson = event.getJSONObject("usage");
+        }
         if (usageJson != null) {
-          usage = new Usage(usageJson.getInteger("prompt_tokens"),
-              usageJson.getInteger("completion_tokens"), usageJson.getInteger("total_tokens"));
+          usage = new Usage(usageJson.getInteger("input_tokens"),
+              usageJson.getInteger("output_tokens"), usageJson.getInteger("total_tokens"));
         }
       } catch (Exception ignore) {
         // 非 JSON 行直接跳过
