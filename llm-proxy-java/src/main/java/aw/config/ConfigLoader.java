@@ -108,12 +108,15 @@ public final class ConfigLoader {
         errors.add("server.addr 必须是端口数字(支持 8080 / \":8080\"),实际: " + addr);
       }
     }
-    List<String> clientApiKeys = strList(serverMap, "client_api_keys");
-    for (int i = 0; i < clientApiKeys.size(); i++) {
-      if (StringUtils.isBlank(clientApiKeys.get(i))) {
-        errors.add("server.client_api_keys[" + i + "] 为空");
+    // 先在原始列表上校验空条目：strList 会把空白过滤掉，先过滤则空 key 被静默丢弃、鉴权意外关闭
+    if (serverMap.get("client_api_keys") instanceof List<?> rawKeys) {
+      for (int i = 0; i < rawKeys.size(); i++) {
+        if (rawKeys.get(i) == null || String.valueOf(rawKeys.get(i)).trim().isEmpty()) {
+          errors.add("server.client_api_keys[" + i + "] 为空");
+        }
       }
     }
+    List<String> clientApiKeys = strList(serverMap, "client_api_keys");
 
     // ---- providers(厂商唯一校验)----
     List<ProxyConfig.Provider> providers = new ArrayList<>();

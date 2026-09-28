@@ -29,7 +29,7 @@ public class RerankHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "rerank";
 
-  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 见请求 builder */
+  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 只覆盖到响应头，body 读取由 withReadWatchdog 空闲超时兜底 */
   private static final HttpClient client = UpstreamHttpClient.SHARED;
 
   private final ConversationStore conversationStore;
@@ -88,27 +88,32 @@ public class RerankHttpHandler {
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
 
-    HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(provider.openaiBaseUrl() + "/rerank"))
-        .timeout(java.time.Duration.ofSeconds(300))
-        .header("Authorization", "Bearer " + provider.apiKey())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-        .build();
-
     long start = System.currentTimeMillis();
     Integer statusCode = null;
     String responseText = null;
     Usage usage = null;
     String errorMessage = null;
     try {
+      // 构造上游请求也放在审计保护范围内：base_url 非法等异常同样留痕
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(provider.openaiBaseUrl() + "/rerank"))
+          .timeout(java.time.Duration.ofSeconds(300))
+          .header("Authorization", "Bearer " + provider.apiKey())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
+          .build();
+
       log.info("client send");
       HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
       statusCode = response.statusCode();
       log.info("Response status code: {}", statusCode);
       String contentType = response.headers().firstValue("Content-Type").orElse("application/json");
       ctx.contentType(contentType);
-      byte[] body = response.body().readAllBytes();
+      // 空闲读超时：上游停止吐数据 300s 后由看门狗 close 流，防止半截挂死永久占用请求线程
+      byte[] body;
+      try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300))) {
+        body = in.readAllBytes();
+      }
       ctx.status(statusCode).result(new ByteArrayInputStream(body));
       responseText = new String(body, StandardCharsets.UTF_8);
       usage = extractJsonUsage(responseText);

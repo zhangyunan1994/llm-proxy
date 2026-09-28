@@ -34,7 +34,7 @@ public class OpenAIChatCompletionsHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "openai.chat.completions";
 
-  /** 上游调用共享 client：连接超时 30s；请求级超时 300s（含流式传输）见请求 builder */
+  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 只覆盖到响应头，body 读取由 withReadWatchdog 空闲超时兜底 */
   private static final HttpClient client = UpstreamHttpClient.SHARED;
 
   private final ConversationStore conversationStore;
@@ -90,33 +90,37 @@ public class OpenAIChatCompletionsHttpHandler {
 
     jsonObject.put("model", modelConfig.upstream());
 
-    boolean stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
-    if (stream) {
-      // 代理层注入 include_usage: 否则上游默认不发 usage 分片，流式审计拿不到 token 用量。
-      // stream_options 类型非法（非对象）时直接覆盖——注入失败比请求被拒更糟
-      Object existing = jsonObject.get("stream_options");
-      JSONObject streamOptions = existing instanceof JSONObject o ? o : new JSONObject();
-      streamOptions.put("include_usage", true);
-      jsonObject.put("stream_options", streamOptions);
-    }
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
-    List<ConversationStore.ChatMessage> chatMessages = parseMessages(jsonObject);
-
-    HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(provider.openaiBaseUrl() + "/chat/completions"))
-        .timeout(java.time.Duration.ofSeconds(300))
-        .header("Authorization", "Bearer " + provider.apiKey())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-        .build();
 
     long start = System.currentTimeMillis();
+    boolean stream = false;
     Integer statusCode = null;
     String responseText = null;
     Usage usage = null;
     String errorMessage = null;
+    List<ConversationStore.ChatMessage> chatMessages = null;
     try {
+      // 解析消息、构造上游请求都放在审计保护范围内：畸形请求（如 base_url 含非法字符）不能击穿审计
+      stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
+      if (stream) {
+        // 代理层注入 include_usage: 否则上游默认不发 usage 分片，流式审计拿不到 token 用量。
+        // stream_options 类型非法（非对象）时直接覆盖——注入失败比请求被拒更糟
+        Object existing = jsonObject.get("stream_options");
+        JSONObject streamOptions = existing instanceof JSONObject o ? o : new JSONObject();
+        streamOptions.put("include_usage", true);
+        jsonObject.put("stream_options", streamOptions);
+      }
+      chatMessages = parseMessages(jsonObject);
+
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(provider.openaiBaseUrl() + "/chat/completions"))
+          .timeout(java.time.Duration.ofSeconds(300))
+          .header("Authorization", "Bearer " + provider.apiKey())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
+          .build();
+
       // 拿到响应头即返回，body 通过 InputStream 持续读取
       log.info("client send");
       HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -134,7 +138,9 @@ public class OpenAIChatCompletionsHttpHandler {
         // 不能用 ctx.outputStream()——其 CompressedOutputStream 未重写 flush()，
         // 调用 flush() 是空操作，响应会被缓冲到 handler 结束才一次性发出。
         ByteArrayOutputStream captured = new ByteArrayOutputStream();
-        try (InputStream upstream = response.body(); OutputStream output = ctx.res().getOutputStream()) {
+        // 空闲读超时：上游停止吐数据 300s 后由看门狗 close 流，防止半截挂死永久占用请求线程
+        try (InputStream upstream = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300));
+             OutputStream output = ctx.res().getOutputStream()) {
           byte[] buffer = new byte[8192];
           int read;
           while ((read = upstream.read(buffer)) != -1) {
@@ -143,12 +149,17 @@ public class OpenAIChatCompletionsHttpHandler {
             output.flush();
             captured.write(buffer, 0, read);
           }
+        } finally {
+          // 正常结束或流被看门狗中断，都保留已转发的（半截）内容供审计
+          responseText = captured.toString(StandardCharsets.UTF_8);
         }
-        responseText = captured.toString(StandardCharsets.UTF_8);
         usage = extractStreamUsage(responseText);
       }
       else {
-        byte[] body = response.body().readAllBytes();
+        byte[] body;
+        try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300))) {
+          body = in.readAllBytes();
+        }
         ctx.result(new ByteArrayInputStream(body));
         responseText = new String(body, StandardCharsets.UTF_8);
         usage = extractJsonUsage(responseText);
@@ -158,6 +169,11 @@ public class OpenAIChatCompletionsHttpHandler {
       // 转发或回写失败也要留痕（statusCode 可能为 null）
       errorMessage = e.toString();
       throw e;
+    }
+    catch (RuntimeException e) {
+      // 解析/构造阶段的意外异常（如 base_url 含非法字符、畸形消息）：500 且必须留痕审计
+      errorMessage = e.toString();
+      ctx.status(500).result("Internal Server Error");
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
@@ -171,7 +187,8 @@ public class OpenAIChatCompletionsHttpHandler {
     }
   }
 
-  /** 把请求 messages 数组展开成待入库的消息列表；content 是数组（多模态）时存其 JSON 字符串 */
+  /** 把请求 messages 数组展开成待入库的消息列表；content 是数组（多模态）时存其 JSON 字符串。
+   *  畸形元素（非对象）跳过不影响转发；缺 role 存 "unknown"——库表 role NOT NULL，不能让畸形消息炸掉整条审计 */
   private static List<ConversationStore.ChatMessage> parseMessages(JSONObject jsonObject) {
     List<ConversationStore.ChatMessage> list = new ArrayList<>();
     JSONArray messages = jsonObject.getJSONArray("messages");
@@ -179,13 +196,13 @@ public class OpenAIChatCompletionsHttpHandler {
       return list;
     }
     for (int i = 0; i < messages.size(); i++) {
-      JSONObject m = messages.getJSONObject(i);
-      if (m == null) {
+      if (!(messages.get(i) instanceof JSONObject m)) {
         continue;
       }
       Object content = m.get("content");
       String contentText = content instanceof String s ? s : content == null ? null : JSON.toJSONString(content);
-      list.add(new ConversationStore.ChatMessage(i, m.getString("role"), contentText));
+      String role = m.getString("role");
+      list.add(new ConversationStore.ChatMessage(i, role == null ? "unknown" : role, contentText));
     }
     return list;
   }

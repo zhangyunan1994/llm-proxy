@@ -49,7 +49,7 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 ```yaml
 server:
   addr: ":18080"                 # 监听端口，支持 "18080" / ":18080"，缺省 8080
-  client_api_keys:               # 客户端鉴权 key 列表；非空时启用鉴权，为空/缺省则不鉴权（启动时告警）
+  client_api_keys:               # 客户端鉴权 key 列表；非空时启用鉴权，为空/缺省则不鉴权（启动时告警）；空白条目视为配置错误
     - "sk-client-xxx"
 
 providers:                       # 上游厂商列表，name 不可重复

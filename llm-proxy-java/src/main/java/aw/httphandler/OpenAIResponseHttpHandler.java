@@ -35,7 +35,7 @@ public class OpenAIResponseHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "openai.responses";
 
-  /** 上游调用共享 client：连接超时 30s；请求级超时 300s（含流式传输）见请求 builder */
+  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 只覆盖到响应头，body 读取由 withReadWatchdog 空闲超时兜底 */
   private static final HttpClient client = UpstreamHttpClient.SHARED;
 
   private final ConversationStore conversationStore;
@@ -91,25 +91,29 @@ public class OpenAIResponseHttpHandler {
 
     jsonObject.put("model", modelConfig.upstream());
 
-    boolean stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
-    List<ConversationStore.ChatMessage> chatMessages = parseMessages(jsonObject);
-
-    HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(provider.openaiBaseUrl() + "/responses"))
-        .timeout(java.time.Duration.ofSeconds(300))
-        .header("Authorization", "Bearer " + provider.apiKey())
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-        .build();
 
     long start = System.currentTimeMillis();
+    boolean stream = false;
     Integer statusCode = null;
     String responseText = null;
     Usage usage = null;
     String errorMessage = null;
+    List<ConversationStore.ChatMessage> chatMessages = null;
     try {
+      // 解析消息、构造上游请求都放在审计保护范围内：畸形请求（如 base_url 含非法字符）不能击穿审计
+      stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
+      chatMessages = parseMessages(jsonObject);
+
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(provider.openaiBaseUrl() + "/responses"))
+          .timeout(java.time.Duration.ofSeconds(300))
+          .header("Authorization", "Bearer " + provider.apiKey())
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
+          .build();
+
       // 拿到响应头即返回，body 通过 InputStream 持续读取
       log.info("client send");
       HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -127,7 +131,9 @@ public class OpenAIResponseHttpHandler {
         // 不能用 ctx.outputStream()——其 CompressedOutputStream 未重写 flush()，
         // 调用 flush() 是空操作，响应会被缓冲到 handler 结束才一次性发出。
         ByteArrayOutputStream captured = new ByteArrayOutputStream();
-        try (InputStream upstream = response.body(); OutputStream output = ctx.res().getOutputStream()) {
+        // 空闲读超时：上游停止吐数据 300s 后由看门狗 close 流，防止半截挂死永久占用请求线程
+        try (InputStream upstream = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300));
+             OutputStream output = ctx.res().getOutputStream()) {
           byte[] buffer = new byte[8192];
           int read;
           while ((read = upstream.read(buffer)) != -1) {
@@ -136,12 +142,17 @@ public class OpenAIResponseHttpHandler {
             output.flush();
             captured.write(buffer, 0, read);
           }
+        } finally {
+          // 正常结束或流被看门狗中断，都保留已转发的（半截）内容供审计
+          responseText = captured.toString(StandardCharsets.UTF_8);
         }
-        responseText = captured.toString(StandardCharsets.UTF_8);
         usage = extractStreamUsage(responseText);
       }
       else {
-        byte[] body = response.body().readAllBytes();
+        byte[] body;
+        try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300))) {
+          body = in.readAllBytes();
+        }
         ctx.result(new ByteArrayInputStream(body));
         responseText = new String(body, StandardCharsets.UTF_8);
         usage = extractJsonUsage(responseText);
@@ -151,6 +162,11 @@ public class OpenAIResponseHttpHandler {
       // 转发或回写失败也要留痕（statusCode 可能为 null）
       errorMessage = e.toString();
       throw e;
+    }
+    catch (RuntimeException e) {
+      // 解析/构造阶段的意外异常（如 base_url 含非法字符、畸形消息）：500 且必须留痕审计
+      errorMessage = e.toString();
+      ctx.status(500).result("Internal Server Error");
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
@@ -176,8 +192,11 @@ public class OpenAIResponseHttpHandler {
       return list;
     }
     for (int i = 0; i < items.size(); i++) {
-      JSONObject m = items.getJSONObject(i);
-      if (m == null || m.getString("role") == null) {
+      if (!(items.get(i) instanceof JSONObject m)) {
+        // 非对象元素（畸形请求）跳过，不影响转发
+        continue;
+      }
+      if (m.getString("role") == null) {
         // 非消息项（如 item_reference / function_call_output）跳过
         continue;
       }
