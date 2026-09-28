@@ -35,7 +35,8 @@ public class AnthropicMessagesHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "anthropic.messages";
 
-  HttpClient client = HttpClient.newHttpClient();
+  /** 上游调用共享 client：连接超时 30s；请求级超时 300s（含流式传输）见各请求 builder */
+  private static final HttpClient client = UpstreamHttpClient.SHARED;
 
   private final ConversationStore conversationStore;
   private final ProxyConfig proxyConfig;
@@ -52,7 +53,7 @@ public class AnthropicMessagesHttpHandler {
     log.info("Handling request content length: {}", ctx.contentLength());
     log.info("Handling request content: {}", ctx.contentType());
 
-    if (ctx.contentLength() < 55 || ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
+    if (ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
       ctx.status(400).result("Invalid request");
       return;
     }
@@ -101,6 +102,7 @@ public class AnthropicMessagesHttpHandler {
 
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(anthropicBaseUrl + "/messages"))
+        .timeout(java.time.Duration.ofSeconds(300))
         .header("Authorization", "Bearer " + provider.apiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))

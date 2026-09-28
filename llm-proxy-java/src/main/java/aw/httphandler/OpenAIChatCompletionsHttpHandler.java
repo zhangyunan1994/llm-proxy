@@ -34,7 +34,8 @@ public class OpenAIChatCompletionsHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "openai.chat.completions";
 
-  HttpClient client = HttpClient.newHttpClient();
+  /** 上游调用共享 client：连接超时 30s；请求级超时 300s（含流式传输）见请求 builder */
+  private static final HttpClient client = UpstreamHttpClient.SHARED;
 
   private final ConversationStore conversationStore;
   private final ProxyConfig proxyConfig;
@@ -51,7 +52,7 @@ public class OpenAIChatCompletionsHttpHandler {
     log.info("Handling request content length: {}", ctx.contentLength());
     log.info("Handling request content: {}", ctx.contentType());
 
-    if (ctx.contentLength() < 55 || ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
+    if (ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
       ctx.status(400).result("Invalid request");
       return;
     }
@@ -91,13 +92,12 @@ public class OpenAIChatCompletionsHttpHandler {
 
     boolean stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
     if (stream) {
-      // 代理层注入 include_usage: 否则上游默认不发 usage 分片，流式审计拿不到 token 用量
-      JSONObject streamOptions = jsonObject.getJSONObject("stream_options");
-      if (streamOptions == null) {
-        streamOptions = new JSONObject();
-        jsonObject.put("stream_options", streamOptions);
-      }
+      // 代理层注入 include_usage: 否则上游默认不发 usage 分片，流式审计拿不到 token 用量。
+      // stream_options 类型非法（非对象）时直接覆盖——注入失败比请求被拒更糟
+      Object existing = jsonObject.get("stream_options");
+      JSONObject streamOptions = existing instanceof JSONObject o ? o : new JSONObject();
       streamOptions.put("include_usage", true);
+      jsonObject.put("stream_options", streamOptions);
     }
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
@@ -105,6 +105,7 @@ public class OpenAIChatCompletionsHttpHandler {
 
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(provider.openaiBaseUrl() + "/chat/completions"))
+        .timeout(java.time.Duration.ofSeconds(300))
         .header("Authorization", "Bearer " + provider.apiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))

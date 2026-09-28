@@ -69,6 +69,8 @@ public class Server {
             }
             String key = ClientAuth.bearerToken(ctx);
             if (!ClientAuth.matches(key, clientApiKeys)) {
+              // 401 不落库（请求体未读取），至少留日志便于发现暴力尝试
+              log.warn("鉴权失败: {} {} from {}", ctx.req().getMethod(), ctx.path(), ctx.ip());
               ctx.status(401).result("Unauthorized");
               ctx.skipRemainingHandlers();
               return;
