@@ -1,7 +1,6 @@
 package aw.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -97,10 +96,40 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void supportedApiTypes为空时不限制路由() {
+  void supportedApiTypes为空报错() {
     String yaml = VALID.replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
         "supported_api_types: []");
-    assertNotNull(ConfigLoader.parse(yaml, "test"));
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("必须配置 supported_api_types"));
+  }
+
+  @Test
+  void supportedApiTypes非法值报错() {
+    String yaml = VALID.replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
+        "supported_api_types: [\"chatgpt\"]");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("supported_api_types 非法值: chatgpt"));
+  }
+
+  @Test
+  void capabilities为空报错() {
+    String yaml = VALID.replace("capabilities: [\"chat\", \"embeddings\", \"rerank\"]", "capabilities: []");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("必须配置 capabilities"));
+  }
+
+  @Test
+  void 标量clientApiKeys报错() {
+    String yaml = VALID.replace("client_api_keys: [\"sk-client\"]", "client_api_keys: \"sk-client\"");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("必须是字符串列表"));
+  }
+
+  @Test
+  void capabilities非法值报错() {
+    String yaml = VALID.replace("capabilities: [\"chat\", \"embeddings\", \"rerank\"]", "capabilities: [\"chat\", \"vision\"]");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("capabilities 非法值: vision"));
   }
 
   @Test

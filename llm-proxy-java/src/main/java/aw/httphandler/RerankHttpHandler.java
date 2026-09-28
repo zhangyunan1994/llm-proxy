@@ -121,6 +121,7 @@ public class RerankHttpHandler {
       UpstreamHttpClient.passThroughHeaders(response, ctx);
       String contentType = response.headers().firstValue("Content-Type").orElse("application/json");
       ctx.contentType(contentType);
+      ctx.header("Cache-Control", "no-cache");
       // 空闲读超时：上游停止吐数据后由看门狗 close 流，防止半截挂死永久占用请求线程
       byte[] body;
       try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(proxyConfig.server().readIdleTimeoutSeconds()))) {

@@ -95,12 +95,15 @@ public final class UpstreamHttpClient {
 
   /**
    * 把上游响应头透传给客户端（限流头 x-ratelimit-*、请求 ID 等客户端 SDK 依赖）。
-   * hop-by-hop 头及由代理自管的头排除在外；调用后设置的 Content-Type / Cache-Control 会覆盖透传值。
+   * hop-by-hop 头及由代理自管的头排除在外；多值同名头用 addHeader 逐份追加（set 语义会让第二份覆盖第一份）。
+   * Content-Type / Cache-Control 在调用后设置（二者均在排除名单内，不会被透传值干扰）。
    */
   static void passThroughHeaders(HttpResponse<InputStream> response, Context ctx) {
     response.headers().map().forEach((name, values) -> {
       if (!SKIP_RESPONSE_HEADERS.contains(name.toLowerCase(java.util.Locale.ROOT))) {
-        values.forEach(value -> ctx.header(name, value));
+        for (String value : values) {
+          ctx.res().addHeader(name, value);
+        }
       }
     });
   }

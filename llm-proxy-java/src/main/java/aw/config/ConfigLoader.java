@@ -121,13 +121,16 @@ public final class ConfigLoader {
         errors.add("server.addr 必须是端口数字(支持 8080 / \":8080\"),实际: " + addr);
       }
     }
-    // 先在原始列表上校验空条目：strList 会把空白过滤掉，先过滤则空 key 被静默丢弃、鉴权意外关闭
+    // 先在原始列表上校验空条目：strList 会把空白过滤掉，先过滤则空 key 被静默丢弃、鉴权意外关闭。
+    // 类型错误（标量而非列表）同样必须报错——否则静默退化为「未配置」，鉴权被悄悄关掉
     if (serverMap.get("client_api_keys") instanceof List<?> rawKeys) {
       for (int i = 0; i < rawKeys.size(); i++) {
         if (rawKeys.get(i) == null || String.valueOf(rawKeys.get(i)).trim().isEmpty()) {
           errors.add("server.client_api_keys[" + i + "] 为空");
         }
       }
+    } else if (serverMap.containsKey("client_api_keys")) {
+      errors.add("server.client_api_keys 必须是字符串列表（当前值不是列表: " + serverMap.get("client_api_keys") + "）");
     }
     List<String> clientApiKeys = strList(serverMap, "client_api_keys");
 
@@ -163,6 +166,16 @@ public final class ConfigLoader {
           errors.add("provider [" + name + "] 直连内置厂商域名, 必须配置 api_key");
         }
         List<String> apiTypes = strList(p, "supported_api_types");
+        if (apiTypes.isEmpty()) {
+          errors.add("provider [" + name + "] 必须配置 supported_api_types（不可为空）");
+        } else {
+          for (String t : apiTypes) {
+            if (!ALL_API_TYPES.contains(t)) {
+              errors.add("provider [" + name + "] supported_api_types 非法值: " + t
+                  + "（合法: openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank）");
+            }
+          }
+        }
         providerApiTypes.put(name, apiTypes);
         providers.add(new ProxyConfig.Provider(name, str(p, "openai_base_url"), str(p, "anthropic_base_url"),
             str(p, "api_key"), apiTypes));
@@ -198,8 +211,17 @@ public final class ConfigLoader {
         if (StringUtils.isBlank(upstream)) {
           upstream = name;
         }
-        // 路由校验：provider 声明了 supported_api_types（非空）时，model 声明的能力必须有对应支持
+        // 路由校验：model 声明的能力必须有 provider 对应支持（supported_api_types 已校验非空）
         List<String> capabilities = strList(m, "capabilities");
+        if (capabilities.isEmpty()) {
+          errors.add("model [" + name + "] 必须配置 capabilities（不可为空）");
+        } else {
+          for (String c : capabilities) {
+            if (!CAPABILITY_TYPES.contains(c)) {
+              errors.add("model [" + name + "] capabilities 非法值: " + c + "（合法: chat / embeddings / rerank）");
+            }
+          }
+        }
         List<String> apiTypes = providerApiTypes.getOrDefault(provider, List.of());
         if (!apiTypes.isEmpty()) {
           if (capabilities.contains("rerank") && !apiTypes.contains("rerank")) {
@@ -237,6 +259,13 @@ public final class ConfigLoader {
   /** chat 类 api 取值（supported_api_types 的三种 chat 格式） */
   private static final Set<String> CHAT_API_TYPES =
       Set.of("openai.chat.completions", "openai.responses", "anthropic.messages");
+
+  /** supported_api_types 合法取值全集 */
+  private static final Set<String> ALL_API_TYPES =
+      Set.of("openai.chat.completions", "openai.responses", "anthropic.messages", "embeddings", "rerank");
+
+  /** capabilities 合法取值全集 */
+  private static final Set<String> CAPABILITY_TYPES = Set.of("chat", "embeddings", "rerank");
 
   private static String str(Map<?, ?> m, String key) {
     Object v = m.get(key);

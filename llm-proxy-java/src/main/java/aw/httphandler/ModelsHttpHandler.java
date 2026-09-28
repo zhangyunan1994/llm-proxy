@@ -48,6 +48,6 @@ public class ModelsHttpHandler {
       jsonObject.put("data", modelsJson);
     }
 
-    ctx.status(200).result(jsonObject.toJSONString());
+    ctx.status(200).contentType("application/json").result(jsonObject.toJSONString());
   }
 }
