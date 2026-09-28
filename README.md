@@ -87,7 +87,9 @@ models:                          # 对外模型列表，name 不可重复，prov
 
 - 请求中未配置的 `model` 返回 `400 Invalid model`（model 名精确匹配，**区分大小写**）
 - **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
-  缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行
+  缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行。
+  CORS 策略为**任意来源放行**（anyHost）：浏览器里任意网页都能向本代理发起请求，实际防线是
+  `client_api_keys` 鉴权——未启用鉴权时请勿将端口暴露到不可信网络
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
 - 请求体上限 50MB，超出返回 `413 Payload too large`
 - **头透传**：上游响应头透传给客户端（限流头 `x-ratelimit-*`、请求 ID 等，hop-by-hop 头除外）；
