@@ -1,5 +1,6 @@
 package aw.httphandler;
 
+import aw.auth.ClientAuth;
 import aw.config.ConfigLoader.ProxyConfig;
 import aw.config.ConfigLoader.ProxyConfig.Provider;
 import aw.db.ConversationStore;
@@ -91,6 +92,7 @@ public class OpenAIResponseHttpHandler {
 
     boolean stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
     String sessionId = ctx.header("X-Session-Id");
+    String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
     List<ConversationStore.ChatMessage> chatMessages = parseMessages(jsonObject);
 
     HttpRequest request = HttpRequest.newBuilder()
@@ -150,7 +152,8 @@ public class OpenAIResponseHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(API, sessionId, model, stream, statusCode, requestBody, responseText,
+      conversationStore.log(API, sessionId, clientApiKey, model, modelConfig.provider(), stream, statusCode,
+          requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),
           usage == null ? null : usage.totalTokens(),

@@ -1,5 +1,6 @@
 package aw.httphandler;
 
+import aw.auth.ClientAuth;
 import aw.config.ConfigLoader.ProxyConfig;
 import aw.config.ConfigLoader.ProxyConfig.Provider;
 import aw.db.ConversationStore;
@@ -84,6 +85,7 @@ public class RerankHttpHandler {
     jsonObject.put("model", modelConfig.upstream());
 
     String sessionId = ctx.header("X-Session-Id");
+    String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
 
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(provider.openaiBaseUrl() + "/rerank"))
@@ -115,7 +117,8 @@ public class RerankHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(API, sessionId, model, false, statusCode, requestBody, responseText,
+      conversationStore.log(API, sessionId, clientApiKey, model, modelConfig.provider(), false, statusCode,
+          requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),
           usage == null ? null : usage.totalTokens(),

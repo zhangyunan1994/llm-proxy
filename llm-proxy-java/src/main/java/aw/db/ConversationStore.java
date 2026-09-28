@@ -27,9 +27,9 @@ public class ConversationStore {
   public record ChatMessage(int seq, String role, String content) {}
 
   private static final String INSERT_CONVERSATION = """
-      INSERT INTO conversations(api, session_id, model, stream, status_code, request_body, response_body,
+      INSERT INTO conversations(api, session_id, client_api_key, model, provider, stream, status_code, request_body, response_body,
                                 prompt_tokens, completion_tokens, total_tokens, cache_tokens, latency_ms, error_message)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """;
 
   private static final String INSERT_MESSAGE = """
@@ -56,6 +56,8 @@ public class ConversationStore {
       // 旧库升级：SQLite 的 ALTER TABLE 不支持 IF NOT EXISTS，先查 pragma 再补列
       addColumnIfMissing(conn, "conversations", "api", "TEXT");
       addColumnIfMissing(conn, "conversations", "cache_tokens", "INTEGER");
+      addColumnIfMissing(conn, "conversations", "provider", "TEXT");
+      addColumnIfMissing(conn, "conversations", "client_api_key", "TEXT");
     } catch (Exception e) {
       throw new IllegalStateException("初始化对话记录表失败", e);
     }
@@ -82,7 +84,8 @@ public class ConversationStore {
    * 写入一次请求的完整记录（单事务）。
    * 数据库异常只记日志不上抛——记录失败不能影响代理转发。
    */
-  public void log(String api, String sessionId, String model, boolean stream, Integer statusCode,
+  public void log(String api, String sessionId, String clientApiKey, String model, String provider,
+      boolean stream, Integer statusCode,
       String requestBody, String responseBody, Integer promptTokens, Integer completionTokens,
       Integer totalTokens, Integer cacheTokens, Long latencyMs, String errorMessage, List<ChatMessage> messages) {
     try (Connection conn = open()) {
@@ -91,25 +94,27 @@ public class ConversationStore {
       try (PreparedStatement ps = conn.prepareStatement(INSERT_CONVERSATION, Statement.RETURN_GENERATED_KEYS)) {
         ps.setString(1, api);
         ps.setString(2, sessionId);
-        ps.setString(3, model);
-        ps.setInt(4, stream ? 1 : 0);
+        ps.setString(3, clientApiKey);
+        ps.setString(4, model);
+        ps.setString(5, provider);
+        ps.setInt(6, stream ? 1 : 0);
         if (statusCode != null) {
-          ps.setInt(5, statusCode);
+          ps.setInt(7, statusCode);
         } else {
-          ps.setNull(5, java.sql.Types.INTEGER);
+          ps.setNull(7, java.sql.Types.INTEGER);
         }
-        ps.setString(6, requestBody);
-        ps.setString(7, responseBody);
-        setNullableInt(ps, 8, promptTokens);
-        setNullableInt(ps, 9, completionTokens);
-        setNullableInt(ps, 10, totalTokens);
-        setNullableInt(ps, 11, cacheTokens);
+        ps.setString(8, requestBody);
+        ps.setString(9, responseBody);
+        setNullableInt(ps, 10, promptTokens);
+        setNullableInt(ps, 11, completionTokens);
+        setNullableInt(ps, 12, totalTokens);
+        setNullableInt(ps, 13, cacheTokens);
         if (latencyMs != null) {
-          ps.setLong(12, latencyMs);
+          ps.setLong(14, latencyMs);
         } else {
-          ps.setNull(12, java.sql.Types.INTEGER);
+          ps.setNull(14, java.sql.Types.INTEGER);
         }
-        ps.setString(13, errorMessage);
+        ps.setString(15, errorMessage);
         ps.executeUpdate();
         try (ResultSet keys = ps.getGeneratedKeys()) {
           conversationId = keys.next() ? keys.getLong(1) : -1;

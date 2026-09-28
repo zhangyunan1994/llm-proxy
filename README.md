@@ -7,6 +7,7 @@ Java 实现的 LLM API 网关。对外提供统一的 OpenAI / Anthropic 风格�
 
 - **统一入口**：5 个转发端点（chat.completions / responses / messages / embeddings / rerank），
   客户端无需感知上游差异
+- **客户端鉴权**：`client_api_keys` 非空时校验 `Authorization: Bearer`，恒定时间比较防时序侧信道
 - **模型路由与名称映射**：对外模型名 → `provider + 上游真实模型名`，请求中的 `model` 字段自动替换
 - **SSE 流式透传**：逐块读取上游、逐块 flush 下发，保证流式体验
 - **会话审计**：SQLite 记录来源接口、token 用量（含缓存命中）、耗时、错误信息，记录失败不影响转发
@@ -48,7 +49,7 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 ```yaml
 server:
   addr: ":18080"                 # 监听端口，支持 "18080" / ":18080"，缺省 8080
-  client_api_keys:               # 预留字段（见已知限制）
+  client_api_keys:               # 客户端鉴权 key 列表；非空时启用鉴权，为空/缺省则不鉴权（启动时告警）
     - "sk-client-xxx"
 
 providers:                       # 上游厂商列表，name 不可重复
@@ -82,6 +83,8 @@ models:                          # 对外模型列表，name 不可重复，prov
 | `GET /v1/models` | —（本地返回配置的模型列表） | 不落库 |
 
 - 请求中未配置的 `model` 返回 `400 Invalid model`
+- **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
+  缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
 - `usage` 解析尽力而为：流式响应从 SSE 分片中提取（chat.completions 需请求方开启
   `stream_options.include_usage`；responses 在 `response.completed` 事件；anthropic.messages 取
@@ -98,7 +101,9 @@ models:                          # 对外模型列表，name 不可重复，prov
 |---|---|
 | `api` | 来源接口标识，取值见上表 |
 | `session_id` | `X-Session-Id` 请求头 |
+| `client_api_key` | 客户端 Bearer key（启用鉴权时记录，用于区分调用方） |
 | `model` | 客户端请求的模型名（对外名） |
+| `provider` | 路由到的上游 provider 名 |
 | `stream` / `status_code` | 是否流式；上游响应码 |
 | `request_body` / `response_body` | 完整请求 / 响应（流式为 SSE 拼接结果） |
 | `prompt_tokens` / `completion_tokens` / `total_tokens` | token 用量（Anthropic 的 `total_tokens` 由 input+output 计算） |
@@ -128,7 +133,6 @@ llm-proxy-java/
 
 ## 已知限制
 
-- `client_api_keys` 已在配置中声明，但服务端**尚未启用**客户端鉴权，端口暴露范围请自行管控
 - Anthropic 上游当前统一使用 `Authorization: Bearer` 头，适合中转网关；直连 Anthropic 官方
   API 需要改为 `x-api-key` + `anthropic-version` 头
 - rerank 的 usage 各家格式不一（Cohere/SiliconFlow 在 `meta.billed_units`，Jina 在
