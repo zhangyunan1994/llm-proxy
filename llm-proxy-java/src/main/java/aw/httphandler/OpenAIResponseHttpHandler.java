@@ -35,15 +35,16 @@ public class OpenAIResponseHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "openai.responses";
 
-  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 只覆盖到响应头，body 读取由 withReadWatchdog 空闲超时兜底 */
-  private static final HttpClient client = UpstreamHttpClient.SHARED;
+  /** 上游共享 client（Server 注入，连接超时见 server.connect_timeout_seconds） */
+  private final HttpClient client;
 
   private final ConversationStore conversationStore;
   private final ProxyConfig proxyConfig;
 
-  public OpenAIResponseHttpHandler(ConversationStore conversationStore, ProxyConfig proxyConfig) {
+  public OpenAIResponseHttpHandler(ConversationStore conversationStore, ProxyConfig proxyConfig, HttpClient upstreamClient) {
     this.conversationStore = conversationStore;
     this.proxyConfig = proxyConfig;
+    this.client = upstreamClient;
   }
 
   /** 上游响应里的 usage（流式响应从 SSE 分片中尽力提取） */
@@ -55,6 +56,11 @@ public class OpenAIResponseHttpHandler {
 
     if (ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
       ctx.status(400).result("Invalid request");
+      return;
+    }
+
+    if (ctx.contentLength() > UpstreamHttpClient.MAX_BODY_BYTES) {
+      ctx.status(413).result("Payload too large");
       return;
     }
 
@@ -108,13 +114,14 @@ public class OpenAIResponseHttpHandler {
 
       HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(provider.openaiBaseUrl() + "/responses"))
-          .timeout(java.time.Duration.ofSeconds(300))
+          .timeout(java.time.Duration.ofSeconds(proxyConfig.server().requestTimeoutSeconds()))
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
       // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
       if (!StringUtils.isBlank(provider.apiKey())) {
         requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
       }
+      UpstreamHttpClient.forwardClientHeaders(ctx, requestBuilder);
       HttpRequest request = requestBuilder.build();
 
       // 拿到响应头即返回，body 通过 InputStream 持续读取
@@ -123,11 +130,14 @@ public class OpenAIResponseHttpHandler {
       statusCode = response.statusCode();
       log.info("Response status code: {}", statusCode);
       ctx.status(statusCode);
+      // 上游响应头透传（限流/请求 ID 等），随后显式设置的 Content-Type / Cache-Control 覆盖透传值
+      UpstreamHttpClient.passThroughHeaders(response, ctx);
 
       String contentType = response.headers().firstValue("Content-Type").orElse("application/json");
       ctx.contentType(contentType);
       ctx.header("Cache-Control", "no-cache");
 
+      java.time.Duration idleTimeout = java.time.Duration.ofSeconds(proxyConfig.server().readIdleTimeoutSeconds());
       if (contentType.contains("text/event-stream")) {
         // 逐块把上游 SSE 内容写回客户端，每块 flush 保证及时下发。
         // 注意：必须用 ctx.res().getOutputStream()（Jetty 原生流，flush 会立即提交 chunk），
@@ -135,7 +145,7 @@ public class OpenAIResponseHttpHandler {
         // 调用 flush() 是空操作，响应会被缓冲到 handler 结束才一次性发出。
         ByteArrayOutputStream captured = new ByteArrayOutputStream();
         // 空闲读超时：上游停止吐数据 300s 后由看门狗 close 流，防止半截挂死永久占用请求线程
-        try (InputStream upstream = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300));
+        try (InputStream upstream = UpstreamHttpClient.withReadWatchdog(response.body(), idleTimeout);
              OutputStream output = ctx.res().getOutputStream()) {
           byte[] buffer = new byte[8192];
           int read;
@@ -153,7 +163,7 @@ public class OpenAIResponseHttpHandler {
       }
       else {
         byte[] body;
-        try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300))) {
+        try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), idleTimeout)) {
           body = in.readAllBytes();
         }
         ctx.result(new ByteArrayInputStream(body));
@@ -184,7 +194,7 @@ public class OpenAIResponseHttpHandler {
   }
 
   /** 把 Responses API 的 input 展开成待入库的消息列表：字符串存为单条 user 消息；数组按 message 项展开，content 分块拼接其 text 字段 */
-  private static List<ConversationStore.ChatMessage> parseMessages(JSONObject jsonObject) {
+  static List<ConversationStore.ChatMessage> parseMessages(JSONObject jsonObject) {
     List<ConversationStore.ChatMessage> list = new ArrayList<>();
     Object input = jsonObject.get("input");
     if (input instanceof String s) {

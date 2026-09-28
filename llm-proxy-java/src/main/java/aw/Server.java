@@ -11,9 +11,11 @@ import aw.httphandler.ModelsHttpHandler;
 import aw.httphandler.OpenAIChatCompletionsHttpHandler;
 import aw.httphandler.OpenAIResponseHttpHandler;
 import aw.httphandler.RerankHttpHandler;
+import aw.httphandler.UpstreamHttpClient;
 import io.javalin.Javalin;
 import io.javalin.plugin.bundled.CorsPlugin;
 import io.javalin.plugin.bundled.CorsPluginConfig.CorsRule;
+import java.net.http.HttpClient;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,11 +45,15 @@ public class Server {
 
     ConversationStore conversationStore = new ConversationStore("sample.db");
 
-    OpenAIChatCompletionsHttpHandler openAIChatCompletionsHttpHandler = new OpenAIChatCompletionsHttpHandler(conversationStore, proxyConfig);
-    OpenAIResponseHttpHandler openAIResponseHttpHandler = new OpenAIResponseHttpHandler(conversationStore, proxyConfig);
-    AnthropicMessagesHttpHandler anthropicMessagesHttpHandler = new AnthropicMessagesHttpHandler(conversationStore, proxyConfig);
-    EmbeddingsHttpHandler embeddingsHttpHandler = new EmbeddingsHttpHandler(conversationStore, proxyConfig);
-    RerankHttpHandler rerankHttpHandler = new RerankHttpHandler(conversationStore, proxyConfig);
+    // 上游 HttpClient：连接超时来自 server.connect_timeout_seconds，全部 handler 共享
+    HttpClient upstreamClient = UpstreamHttpClient.create(
+        java.time.Duration.ofSeconds(proxyConfig.server().connectTimeoutSeconds()));
+
+    OpenAIChatCompletionsHttpHandler openAIChatCompletionsHttpHandler = new OpenAIChatCompletionsHttpHandler(conversationStore, proxyConfig, upstreamClient);
+    OpenAIResponseHttpHandler openAIResponseHttpHandler = new OpenAIResponseHttpHandler(conversationStore, proxyConfig, upstreamClient);
+    AnthropicMessagesHttpHandler anthropicMessagesHttpHandler = new AnthropicMessagesHttpHandler(conversationStore, proxyConfig, upstreamClient);
+    EmbeddingsHttpHandler embeddingsHttpHandler = new EmbeddingsHttpHandler(conversationStore, proxyConfig, upstreamClient);
+    RerankHttpHandler rerankHttpHandler = new RerankHttpHandler(conversationStore, proxyConfig, upstreamClient);
     ModelsHttpHandler modelsHttpHandler = new ModelsHttpHandler(proxyConfig);
 
 

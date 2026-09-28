@@ -48,7 +48,10 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 
 ```yaml
 server:
-  addr: ":18080"                 # 监听端口，支持 "18080" / ":18080"，缺省 8080
+  addr: ":18080"                 # 监听端口，支持 "18080" / ":18080"（不支持绑定特定网卡），缺省 8080
+  connect_timeout_seconds: 30    # 上游连接超时（秒，缺省 30）
+  request_timeout_seconds: 300   # 上游响应头超时（秒，缺省 300；不含 body 传输）
+  read_idle_timeout_seconds: 300 # 上游 body 空闲读超时（秒，缺省 300；流式分片间隔超过该值即断流）
   client_api_keys:               # 客户端鉴权 key 列表；非空时启用鉴权，为空/缺省则不鉴权（启动时告警）；空白条目视为配置错误
     - "sk-client-xxx"
 
@@ -57,7 +60,7 @@ providers:                       # 上游厂商列表，name 不可重复
     openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（必填，chat/responses/embeddings/rerank）
     anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）；可选，缺省回退 openai_base_url
     api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（openai.com、deepseek.com 等 27 家）时必填，否则启动报错
-    supported_api_types: []                  # 预留字段
+    supported_api_types: []                  # 路由校验：非空时校验 model.capabilities 与本列表的匹配；为空则不限制。取值：openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank
   - name: bailian
     openai_base_url: "https://xxx/compatible-mode/v1"
     api_key: "sk-yyy"
@@ -68,7 +71,7 @@ models:                          # 对外模型列表，name 不可重复，prov
     upstream: MiMo-v2.6-Pro      # 发给上游的真实模型名，缺省等于 name
     max_tokens: 32768            # 模型元数据，透出在 GET /v1/models（未配置为 null）
     context_length: 262144       # 上下文窗口元数据，透出在 GET /v1/models
-    capabilities: ["chat"]       # 能力标签元数据，透出在 GET /v1/models
+    capabilities: ["chat"]       # 能力标签，透出在 GET /v1/models；provider 配置了 supported_api_types 时参与路由校验：rerank/embeddings 需对应 apitype，chat 需至少一种 chat 格式
 ```
 
 ## API 端点
@@ -82,13 +85,19 @@ models:                          # 对外模型列表，name 不可重复，prov
 | `POST /v1/rerank` | `{openai_base_url}/rerank` | `rerank` |
 | `GET /v1/models` | —（本地返回配置的模型列表） | 不落库 |
 
-- 请求中未配置的 `model` 返回 `400 Invalid model`
+- 请求中未配置的 `model` 返回 `400 Invalid model`（model 名精确匹配，**区分大小写**）
 - **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
   缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
+- 请求体上限 50MB，超出返回 `413 Payload too large`
+- **头透传**：上游响应头透传给客户端（限流头 `x-ratelimit-*`、请求 ID 等，hop-by-hop 头除外）；
+  客户端的 `anthropic-version` / `anthropic-beta` / `x-request-id` 请求头透传给上游
 - `usage` 解析尽力而为：流式响应从 SSE 分片中提取（chat.completions 流式由代理自动注入
   `stream_options.include_usage`；responses 在 `response.completed` 事件；anthropic.messages 取
   `message_start` + `message_delta`），字段缺失时对应列为 NULL
+- **上游超时（三层）**：连接 `connect_timeout_seconds`（默认 30s）→ 响应头 `request_timeout_seconds`
+  （默认 300s，不含 body 传输）→ body 空闲读 `read_idle_timeout_seconds`（默认 300s）。第三层由看门狗
+  实现：上游停止吐数据（或客户端消费极慢）超过该值即断流，已收到的半截响应仍会落库审计
 
 ## 会话审计（SQLite）
 

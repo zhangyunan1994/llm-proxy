@@ -7,6 +7,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -44,7 +45,9 @@ public final class ConfigLoader {
 
   public record ProxyConfig(Server server, List<Provider> providers, List<Model> models) {
 
-    public record Server(int port, List<String> clientApiKeys) {}
+    /** 三层上游超时（秒）：连接 / 响应头（request_timeout） / body 空闲读（read_idle_timeout，含流式分片间隔） */
+    public record Server(int port, List<String> clientApiKeys,
+        int connectTimeoutSeconds, int requestTimeoutSeconds, int readIdleTimeoutSeconds) {}
 
     public record Provider(String name, String openaiBaseUrl, String anthropicBaseUrl,
         String apiKey, List<String> supportedApiTypes) {}
@@ -128,9 +131,15 @@ public final class ConfigLoader {
     }
     List<String> clientApiKeys = strList(serverMap, "client_api_keys");
 
+    // ---- 上游三层超时（缺省 30 / 300 / 300 秒）----
+    Integer connectTimeout = positiveInt(serverMap.get("connect_timeout_seconds"), "server.connect_timeout_seconds", errors);
+    Integer requestTimeout = positiveInt(serverMap.get("request_timeout_seconds"), "server.request_timeout_seconds", errors);
+    Integer readIdleTimeout = positiveInt(serverMap.get("read_idle_timeout_seconds"), "server.read_idle_timeout_seconds", errors);
+
     // ---- providers(厂商唯一校验)----
     List<ProxyConfig.Provider> providers = new ArrayList<>();
     Set<String> providerNames = new HashSet<>();
+    Map<String, List<String>> providerApiTypes = new HashMap<>();
     if (map.get("providers") instanceof List<?> list) {
       for (int i = 0; i < list.size(); i++) {
         if (!(list.get(i) instanceof Map<?, ?> p)) {
@@ -153,8 +162,10 @@ public final class ConfigLoader {
             && (requiresApiKey(str(p, "openai_base_url")) || requiresApiKey(str(p, "anthropic_base_url")))) {
           errors.add("provider [" + name + "] 直连内置厂商域名, 必须配置 api_key");
         }
+        List<String> apiTypes = strList(p, "supported_api_types");
+        providerApiTypes.put(name, apiTypes);
         providers.add(new ProxyConfig.Provider(name, str(p, "openai_base_url"), str(p, "anthropic_base_url"),
-            str(p, "api_key"), strList(p, "supported_api_types")));
+            str(p, "api_key"), apiTypes));
       }
     } else {
       warnings.add("providers 未配置");
@@ -187,6 +198,22 @@ public final class ConfigLoader {
         if (StringUtils.isBlank(upstream)) {
           upstream = name;
         }
+        // 路由校验：provider 声明了 supported_api_types（非空）时，model 声明的能力必须有对应支持
+        List<String> capabilities = strList(m, "capabilities");
+        List<String> apiTypes = providerApiTypes.getOrDefault(provider, List.of());
+        if (!apiTypes.isEmpty()) {
+          if (capabilities.contains("rerank") && !apiTypes.contains("rerank")) {
+            errors.add("model [" + name + "] 声明 rerank 能力, 但 provider [" + provider + "] 的 supported_api_types 不含 rerank");
+          }
+          if (capabilities.contains("embeddings") && !apiTypes.contains("embeddings")) {
+            errors.add("model [" + name + "] 声明 embeddings 能力, 但 provider [" + provider + "] 的 supported_api_types 不含 embeddings");
+          }
+          if (capabilities.contains("chat")
+              && apiTypes.stream().noneMatch(CHAT_API_TYPES::contains)) {
+            errors.add("model [" + name + "] 声明 chat 能力, 但 provider [" + provider
+                + "] 的 supported_api_types 至少需包含一种 chat 格式 (openai.chat.completions / openai.responses / anthropic.messages)");
+          }
+        }
         models.add(new ProxyConfig.Model(name, provider, upstream,
             positiveInt(m.get("max_tokens"), "model [" + name + "].max_tokens", errors),
             positiveInt(m.get("context_length"), "model [" + name + "].context_length", errors),
@@ -200,9 +227,16 @@ public final class ConfigLoader {
       throw new ConfigException(errors);
     }
     warnings.forEach(w -> log.warn("配置警告: {}", w));
-    return new ProxyConfig(new ProxyConfig.Server(port, clientApiKeys),
+    return new ProxyConfig(new ProxyConfig.Server(port, clientApiKeys,
+        connectTimeout != null ? connectTimeout : 30,
+        requestTimeout != null ? requestTimeout : 300,
+        readIdleTimeout != null ? readIdleTimeout : 300),
         List.copyOf(providers), List.copyOf(models));
   }
+
+  /** chat 类 api 取值（supported_api_types 的三种 chat 格式） */
+  private static final Set<String> CHAT_API_TYPES =
+      Set.of("openai.chat.completions", "openai.responses", "anthropic.messages");
 
   private static String str(Map<?, ?> m, String key) {
     Object v = m.get(key);

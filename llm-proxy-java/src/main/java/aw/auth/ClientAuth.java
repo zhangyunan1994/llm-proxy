@@ -17,17 +17,22 @@ public final class ClientAuth {
 
   private ClientAuth() {}
 
-  /** 从 Authorization: Bearer <token> 提取 token，缺失或格式不符返回 null */
+  /** 从 Context 提取 Authorization 头并解析 Bearer token */
   public static String bearerToken(Context ctx) {
-    String auth = ctx.header("Authorization");
-    if (auth == null) {
+    return bearerToken(ctx.header("Authorization"));
+  }
+
+  /** 从 Authorization: Bearer <token> 提取 token，缺失或格式不符返回 null（前缀大小写不敏感） */
+  public static String bearerToken(String authorizationHeader) {
+    if (authorizationHeader == null) {
       return null;
     }
     String prefix = "Bearer ";
-    if (auth.length() <= prefix.length() || !auth.regionMatches(true, 0, prefix, 0, prefix.length())) {
+    if (authorizationHeader.length() <= prefix.length()
+        || !authorizationHeader.regionMatches(true, 0, prefix, 0, prefix.length())) {
       return null;
     }
-    return auth.substring(prefix.length()).trim();
+    return authorizationHeader.substring(prefix.length()).trim();
   }
 
   /** 恒定时间比较（遍历全部候选 key），避免时序侧信道 */

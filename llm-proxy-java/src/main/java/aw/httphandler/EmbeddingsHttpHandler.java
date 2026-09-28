@@ -29,15 +29,16 @@ public class EmbeddingsHttpHandler {
   /** 落库用的来源接口标识 */
   private static final String API = "embeddings";
 
-  /** 上游调用共享 client：连接超时 30s；请求级超时 300s 只覆盖到响应头，body 读取由 withReadWatchdog 空闲超时兜底 */
-  private static final HttpClient client = UpstreamHttpClient.SHARED;
+  /** 上游共享 client（Server 注入，连接超时见 server.connect_timeout_seconds） */
+  private final HttpClient client;
 
   private final ConversationStore conversationStore;
   private final ProxyConfig proxyConfig;
 
-  public EmbeddingsHttpHandler(ConversationStore conversationStore, ProxyConfig proxyConfig) {
+  public EmbeddingsHttpHandler(ConversationStore conversationStore, ProxyConfig proxyConfig, HttpClient upstreamClient) {
     this.conversationStore = conversationStore;
     this.proxyConfig = proxyConfig;
+    this.client = upstreamClient;
   }
 
   /** 上游响应里的 usage */
@@ -49,6 +50,11 @@ public class EmbeddingsHttpHandler {
 
     if (ctx.contentType() == null || !ctx.contentType().contains("application/json")) {
       ctx.status(400).result("Invalid request");
+      return;
+    }
+
+    if (ctx.contentLength() > UpstreamHttpClient.MAX_BODY_BYTES) {
+      ctx.status(413).result("Payload too large");
       return;
     }
 
@@ -97,13 +103,14 @@ public class EmbeddingsHttpHandler {
       // 构造上游请求也放在审计保护范围内：base_url 非法等异常同样留痕
       HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(provider.openaiBaseUrl() + "/embeddings"))
-          .timeout(java.time.Duration.ofSeconds(300))
+          .timeout(java.time.Duration.ofSeconds(proxyConfig.server().requestTimeoutSeconds()))
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
       // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
       if (!StringUtils.isBlank(provider.apiKey())) {
         requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
       }
+      UpstreamHttpClient.forwardClientHeaders(ctx, requestBuilder);
       HttpRequest request = requestBuilder.build();
 
       // 拿到响应头即返回，body 通过 InputStream 持续读取
@@ -111,11 +118,13 @@ public class EmbeddingsHttpHandler {
       HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
       statusCode = response.statusCode();
       log.info("Response status code: {}", statusCode);
+      // 上游响应头透传（限流/请求 ID 等），随后显式设置的 Content-Type 覆盖透传值
+      UpstreamHttpClient.passThroughHeaders(response, ctx);
       String contentType = response.headers().firstValue("Content-Type").orElse("application/json");
       ctx.contentType(contentType);
-      // 空闲读超时：上游停止吐数据 300s 后由看门狗 close 流，防止半截挂死永久占用请求线程
+      // 空闲读超时：上游停止吐数据后由看门狗 close 流，防止半截挂死永久占用请求线程
       byte[] body;
-      try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(300))) {
+      try (InputStream in = UpstreamHttpClient.withReadWatchdog(response.body(), java.time.Duration.ofSeconds(proxyConfig.server().readIdleTimeoutSeconds()))) {
         body = in.readAllBytes();
       }
       ctx.status(statusCode).result(new ByteArrayInputStream(body));
