@@ -132,8 +132,8 @@ public final class ConfigLoader {
         if (!providerNames.add(name)) {
           errors.add("provider name 重复: " + name);
         }
-        if (StringUtils.isBlank(str(p, "openai_base_url")) && StringUtils.isBlank(str(p, "anthropic_base_url"))) {
-          warnings.add("provider [" + name + "] 未配置任何 base_url");
+        if (StringUtils.isBlank(str(p, "openai_base_url"))) {
+          errors.add("provider [" + name + "] 缺少 openai_base_url (anthropic_base_url 可选, 缺省回退 openai_base_url)");
         }
         providers.add(new ProxyConfig.Provider(name, str(p, "openai_base_url"), str(p, "anthropic_base_url"),
             str(p, "api_key"), strList(p, "supported_api_types")));

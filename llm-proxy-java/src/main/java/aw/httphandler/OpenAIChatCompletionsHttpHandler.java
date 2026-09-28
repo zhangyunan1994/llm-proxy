@@ -90,6 +90,15 @@ public class OpenAIChatCompletionsHttpHandler {
     jsonObject.put("model", modelConfig.upstream());
 
     boolean stream = Boolean.TRUE.equals(jsonObject.getBoolean("stream"));
+    if (stream) {
+      // 代理层注入 include_usage: 否则上游默认不发 usage 分片，流式审计拿不到 token 用量
+      JSONObject streamOptions = jsonObject.getJSONObject("stream_options");
+      if (streamOptions == null) {
+        streamOptions = new JSONObject();
+        jsonObject.put("stream_options", streamOptions);
+      }
+      streamOptions.put("include_usage", true);
+    }
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
     List<ConversationStore.ChatMessage> chatMessages = parseMessages(jsonObject);

@@ -162,20 +162,43 @@ public class OpenAIResponseHttpHandler {
     }
   }
 
-  /** 把请求 messages 数组展开成待入库的消息列表；content 是数组（多模态）时存其 JSON 字符串 */
+  /** 把 Responses API 的 input 展开成待入库的消息列表：字符串存为单条 user 消息；数组按 message 项展开，content 分块拼接其 text 字段 */
   private static List<ConversationStore.ChatMessage> parseMessages(JSONObject jsonObject) {
     List<ConversationStore.ChatMessage> list = new ArrayList<>();
-    JSONArray messages = jsonObject.getJSONArray("messages");
-    if (messages == null) {
+    Object input = jsonObject.get("input");
+    if (input instanceof String s) {
+      list.add(new ConversationStore.ChatMessage(0, "user", s));
       return list;
     }
-    for (int i = 0; i < messages.size(); i++) {
-      JSONObject m = messages.getJSONObject(i);
-      if (m == null) {
+    if (!(input instanceof JSONArray items)) {
+      return list;
+    }
+    for (int i = 0; i < items.size(); i++) {
+      JSONObject m = items.getJSONObject(i);
+      if (m == null || m.getString("role") == null) {
+        // 非消息项（如 item_reference / function_call_output）跳过
         continue;
       }
       Object content = m.get("content");
-      String contentText = content instanceof String s ? s : content == null ? null : JSON.toJSONString(content);
+      String contentText;
+      if (content instanceof String str) {
+        contentText = str;
+      } else if (content instanceof JSONArray parts) {
+        StringBuilder sb = new StringBuilder();
+        for (int j = 0; j < parts.size(); j++) {
+          JSONObject part = parts.getJSONObject(j);
+          String text = part != null ? part.getString("text") : null;
+          if (text != null) {
+            if (sb.length() > 0) {
+              sb.append('\n');
+            }
+            sb.append(text);
+          }
+        }
+        contentText = sb.length() > 0 ? sb.toString() : JSON.toJSONString(content);
+      } else {
+        contentText = content == null ? null : JSON.toJSONString(content);
+      }
       list.add(new ConversationStore.ChatMessage(i, m.getString("role"), contentText));
     }
     return list;

@@ -54,8 +54,8 @@ server:
 
 providers:                       # 上游厂商列表，name 不可重复
   - name: xiaomi
-    openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（chat/responses/embeddings/rerank）
-    anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）
+    openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（必填，chat/responses/embeddings/rerank）
+    anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）；可选，缺省回退 openai_base_url
     api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带
     supported_api_types: []                  # 预留字段
   - name: bailian
@@ -77,7 +77,7 @@ models:                          # 对外模型列表，name 不可重复，prov
 |---|---|---|
 | `POST /v1/chat/completions` | `{openai_base_url}/chat/completions` | `openai.chat.completions` |
 | `POST /v1/responses` | `{openai_base_url}/responses` | `openai.responses` |
-| `POST /v1/messages` | `{anthropic_base_url}/messages` | `anthropic.messages` |
+| `POST /v1/messages` | `{anthropic_base_url 或 openai_base_url}/messages` | `anthropic.messages` |
 | `POST /v1/embeddings` | `{openai_base_url}/embeddings` | `embeddings` |
 | `POST /v1/rerank` | `{openai_base_url}/rerank` | `rerank` |
 | `GET /v1/models` | —（本地返回配置的模型列表） | 不落库 |
@@ -86,7 +86,7 @@ models:                          # 对外模型列表，name 不可重复，prov
 - **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
   缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
-- `usage` 解析尽力而为：流式响应从 SSE 分片中提取（chat.completions 需请求方开启
+- `usage` 解析尽力而为：流式响应从 SSE 分片中提取（chat.completions 流式由代理自动注入
   `stream_options.include_usage`；responses 在 `response.completed` 事件；anthropic.messages 取
   `message_start` + `message_delta`），字段缺失时对应列为 NULL
 

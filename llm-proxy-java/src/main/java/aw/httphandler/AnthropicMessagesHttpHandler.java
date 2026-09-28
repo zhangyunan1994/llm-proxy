@@ -95,8 +95,12 @@ public class AnthropicMessagesHttpHandler {
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
     List<ConversationStore.ChatMessage> chatMessages = parseMessages(jsonObject);
 
+    // anthropic_base_url 可选: 缺省回退用 openai_base_url（配置校验保证 openai_base_url 必存在）
+    String anthropicBaseUrl = StringUtils.isBlank(provider.anthropicBaseUrl())
+        ? provider.openaiBaseUrl() : provider.anthropicBaseUrl();
+
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create(provider.anthropicBaseUrl() + "/messages"))
+        .uri(URI.create(anthropicBaseUrl + "/messages"))
         .header("Authorization", "Bearer " + provider.apiKey())
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
