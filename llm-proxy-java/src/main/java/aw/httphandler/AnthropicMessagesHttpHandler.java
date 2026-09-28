@@ -60,7 +60,7 @@ public class AnthropicMessagesHttpHandler {
 
     String requestBody = ctx.body();
 
-    log.info("Handling request body: {}", requestBody);
+    log.debug("Handling request body: {}", requestBody);
 
     if (!JSON.isValidObject(requestBody)) {
       ctx.status(400).result("Invalid request");
@@ -110,13 +110,16 @@ public class AnthropicMessagesHttpHandler {
       String anthropicBaseUrl = StringUtils.isBlank(provider.anthropicBaseUrl())
           ? provider.openaiBaseUrl() : provider.anthropicBaseUrl();
 
-      HttpRequest request = HttpRequest.newBuilder()
+      HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(anthropicBaseUrl + "/messages"))
           .timeout(java.time.Duration.ofSeconds(300))
-          .header("Authorization", "Bearer " + provider.apiKey())
           .header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-          .build();
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
+      // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
+      if (!StringUtils.isBlank(provider.apiKey())) {
+        requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
+      }
+      HttpRequest request = requestBuilder.build();
 
       // 拿到响应头即返回，body 通过 InputStream 持续读取
       log.info("client send");
@@ -141,7 +144,7 @@ public class AnthropicMessagesHttpHandler {
           byte[] buffer = new byte[8192];
           int read;
           while ((read = upstream.read(buffer)) != -1) {
-            log.info("server send sse {}, read {}, {}", buffer.length, read, new String(buffer, 0, read));
+            log.debug("server send sse {}, read {}, {}", buffer.length, read, new String(buffer, 0, read));
             output.write(buffer, 0, read);
             output.flush();
             captured.write(buffer, 0, read);
@@ -185,9 +188,32 @@ public class AnthropicMessagesHttpHandler {
   }
 
   /** 把请求 messages 数组展开成待入库的消息列表；content 是数组（多模态）时存其 JSON 字符串。
-   *  畸形元素（非对象）跳过不影响转发；缺 role 存 "unknown"——库表 role NOT NULL，不能让畸形消息炸掉整条审计 */
+   *  畸形元素（非对象）跳过不影响转发；缺 role 存 "unknown"——库表 role NOT NULL，不能让畸形消息炸掉整条审计。
+   *  顶层 system 提示词也作为一条 role=system 消息入库（seq=-1 表示位于 messages 之前），否则审计看不到提示词主体 */
   private static List<ConversationStore.ChatMessage> parseMessages(JSONObject jsonObject) {
     List<ConversationStore.ChatMessage> list = new ArrayList<>();
+    Object system = jsonObject.get("system");
+    if (system instanceof String s && !s.isBlank()) {
+      list.add(new ConversationStore.ChatMessage(-1, "system", s));
+    } else if (system instanceof JSONArray blocks) {
+      // content 块数组：拼接各块 text（与 messages 的多模态处理一致）
+      StringBuilder sb = new StringBuilder();
+      for (int j = 0; j < blocks.size(); j++) {
+        if (!(blocks.get(j) instanceof JSONObject block)) {
+          continue;
+        }
+        String text = block.getString("text");
+        if (text != null) {
+          if (sb.length() > 0) {
+            sb.append('\n');
+          }
+          sb.append(text);
+        }
+      }
+      if (sb.length() > 0) {
+        list.add(new ConversationStore.ChatMessage(-1, "system", sb.toString()));
+      }
+    }
     JSONArray messages = jsonObject.getJSONArray("messages");
     if (messages == null) {
       return list;

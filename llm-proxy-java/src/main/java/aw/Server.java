@@ -53,6 +53,7 @@ public class Server {
 
     var app = Javalin.create(config -> {
       config.concurrency.useVirtualThreads = true;
+      config.http.maxRequestSize = 100_000_000L;
       config.registerPlugin(new CorsPlugin((c -> c.addRule(CorsRule::anyHost))));
 
       // 客户端鉴权：client_api_keys 非空时，转发端点要求合法 Bearer token（/v1/models 保持开放）

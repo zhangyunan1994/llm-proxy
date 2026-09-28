@@ -59,7 +59,7 @@ public class OpenAIChatCompletionsHttpHandler {
 
     String requestBody = ctx.body();
 
-    log.info("Handling request body: {}", requestBody);
+    log.debug("Handling request body: {}", requestBody);
 
     if (!JSON.isValidObject(requestBody)) {
       ctx.status(400).result("Invalid request");
@@ -113,13 +113,16 @@ public class OpenAIChatCompletionsHttpHandler {
       }
       chatMessages = parseMessages(jsonObject);
 
-      HttpRequest request = HttpRequest.newBuilder()
+      HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(provider.openaiBaseUrl() + "/chat/completions"))
           .timeout(java.time.Duration.ofSeconds(300))
-          .header("Authorization", "Bearer " + provider.apiKey())
           .header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-          .build();
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
+      // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
+      if (!StringUtils.isBlank(provider.apiKey())) {
+        requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
+      }
+      HttpRequest request = requestBuilder.build();
 
       // 拿到响应头即返回，body 通过 InputStream 持续读取
       log.info("client send");
@@ -144,7 +147,7 @@ public class OpenAIChatCompletionsHttpHandler {
           byte[] buffer = new byte[8192];
           int read;
           while ((read = upstream.read(buffer)) != -1) {
-            log.info("server send sse {}, read {}, {}", buffer.length, read, new String(buffer, 0, read));
+            log.debug("server send sse {}, read {}, {}", buffer.length, read, new String(buffer, 0, read));
             output.write(buffer, 0, read);
             output.flush();
             captured.write(buffer, 0, read);

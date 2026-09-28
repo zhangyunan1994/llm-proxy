@@ -54,7 +54,7 @@ public class RerankHttpHandler {
 
     String requestBody = ctx.body();
 
-    log.info("Handling request body: {}", requestBody);
+    log.debug("Handling request body: {}", requestBody);
 
     if (!JSON.isValidObject(requestBody)) {
       ctx.status(400).result("Invalid request");
@@ -95,13 +95,16 @@ public class RerankHttpHandler {
     String errorMessage = null;
     try {
       // 构造上游请求也放在审计保护范围内：base_url 非法等异常同样留痕
-      HttpRequest request = HttpRequest.newBuilder()
+      HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(provider.openaiBaseUrl() + "/rerank"))
           .timeout(java.time.Duration.ofSeconds(300))
-          .header("Authorization", "Bearer " + provider.apiKey())
           .header("Content-Type", "application/json")
-          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()))
-          .build();
+          .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
+      // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
+      if (!StringUtils.isBlank(provider.apiKey())) {
+        requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
+      }
+      HttpRequest request = requestBuilder.build();
 
       log.info("client send");
       HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -119,6 +122,10 @@ public class RerankHttpHandler {
       usage = extractJsonUsage(responseText);
     }
     catch (Exception e) {
+      if (e instanceof InterruptedException) {
+        // 恢复中断标志（不吞掉停机信号），与对话 handler 的 rethrow 风格对齐
+        Thread.currentThread().interrupt();
+      }
       errorMessage = e.toString();
       ctx.status(500).result("Internal Server Error");
     }

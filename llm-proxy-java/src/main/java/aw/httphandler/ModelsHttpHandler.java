@@ -9,7 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * GET /v1/models => Model metadata (id, context size, parameters)
+ * GET /v1/models => 模型元数据（id、provider、max_tokens、context_length、capabilities，来自 config.yaml）
  */
 public class ModelsHttpHandler {
   private static final Logger log = LoggerFactory.getLogger(ModelsHttpHandler.class);
@@ -38,7 +38,10 @@ public class ModelsHttpHandler {
         modelJson.put("object", "model");
         modelJson.put("owned_by", model.provider());
         modelJson.put("created", 758044800);
-        modelJson.put("shutdown_date", null);
+        // 元数据字段直出配置（未配置为 null），客户端可据此选型
+        modelJson.put("max_tokens", model.maxTokens());
+        modelJson.put("context_length", model.contextLength());
+        modelJson.put("capabilities", model.capabilities());
         return modelJson;
       }).toList();
 

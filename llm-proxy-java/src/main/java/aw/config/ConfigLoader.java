@@ -3,11 +3,13 @@ package aw.config;
 import aw.util.StringUtils;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -31,6 +33,14 @@ public final class ConfigLoader {
       super("配置校验失败:\n  - " + String.join("\n  - ", errors));
     }
   }
+
+  /** 内置直连厂商域名：这些 base_url 必须配置 api_key（本地自建/免 key 网关才可省略） */
+  private static final Set<String> KEY_REQUIRED_DOMAINS = Set.of(
+      "deepseek.com", "aliyuncs.com", "bigmodel.cn", "z.ai", "moonshot.cn", "volces.com",
+      "minimaxi.com", "minimax.chat", "baidubce.com", "cloud.tencent.com", "xf-yun.com",
+      "stepfun.com", "lingyiwanwu.com", "baichuan-ai.com", "xiaomimimo.com", "openai.com",
+      "anthropic.com", "googleapis.com", "x.ai", "mistral.ai", "groq.com", "together.xyz",
+      "fireworks.ai", "perplexity.ai", "azure.com", "openrouter.ai", "siliconflow.cn");
 
   public record ProxyConfig(Server server, List<Provider> providers, List<Model> models) {
 
@@ -138,6 +148,11 @@ public final class ConfigLoader {
         if (StringUtils.isBlank(str(p, "openai_base_url"))) {
           errors.add("provider [" + name + "] 缺少 openai_base_url (anthropic_base_url 可选, 缺省回退 openai_base_url)");
         }
+        // 直连内置厂商域名时必须配 api_key；本地自建/免 key 网关可省略（运行时不发 Authorization 头）
+        if (StringUtils.isBlank(str(p, "api_key"))
+            && (requiresApiKey(str(p, "openai_base_url")) || requiresApiKey(str(p, "anthropic_base_url")))) {
+          errors.add("provider [" + name + "] 直连内置厂商域名, 必须配置 api_key");
+        }
         providers.add(new ProxyConfig.Provider(name, str(p, "openai_base_url"), str(p, "anthropic_base_url"),
             str(p, "api_key"), strList(p, "supported_api_types")));
       }
@@ -192,6 +207,29 @@ public final class ConfigLoader {
   private static String str(Map<?, ?> m, String key) {
     Object v = m.get(key);
     return v == null ? null : String.valueOf(v).trim();
+  }
+
+  /** base_url 的 host 是否命中内置厂商域名（后缀匹配，含子域名） */
+  private static boolean requiresApiKey(String baseUrl) {
+    if (baseUrl == null) {
+      return false;
+    }
+    String host;
+    try {
+      host = URI.create(baseUrl.trim()).getHost();
+    } catch (IllegalArgumentException e) {
+      return false; // URL 非法由运行期 500 + 审计路径兜底，此处只做 key 必填检查
+    }
+    if (host == null) {
+      return false;
+    }
+    host = host.toLowerCase(Locale.ROOT);
+    for (String domain : KEY_REQUIRED_DOMAINS) {
+      if (host.equals(domain) || host.endsWith("." + domain)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static Integer positiveInt(Object v, String field, List<String> errors) {

@@ -56,7 +56,7 @@ providers:                       # 上游厂商列表，name 不可重复
   - name: xiaomi
     openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（必填，chat/responses/embeddings/rerank）
     anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）；可选，缺省回退 openai_base_url
-    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带
+    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（openai.com、deepseek.com 等 27 家）时必填，否则启动报错
     supported_api_types: []                  # 预留字段
   - name: bailian
     openai_base_url: "https://xxx/compatible-mode/v1"
@@ -66,9 +66,9 @@ models:                          # 对外模型列表，name 不可重复，prov
   - name: mimo-v2.6-pro          # 对外暴露的模型名（客户端请求里填的名字）
     provider: xiaomi             # 路由到哪个 provider
     upstream: MiMo-v2.6-Pro      # 发给上游的真实模型名，缺省等于 name
-    max_tokens: 32768            # 以下为元数据字段，暂不参与转发逻辑
-    context_length: 262144
-    capabilities: ["chat"]
+    max_tokens: 32768            # 模型元数据，透出在 GET /v1/models（未配置为 null）
+    context_length: 262144       # 上下文窗口元数据，透出在 GET /v1/models
+    capabilities: ["chat"]       # 能力标签元数据，透出在 GET /v1/models
 ```
 
 ## API 端点
