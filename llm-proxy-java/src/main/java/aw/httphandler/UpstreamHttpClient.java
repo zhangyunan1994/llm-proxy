@@ -20,8 +20,11 @@ import java.util.concurrent.TimeUnit;
  */
 public final class UpstreamHttpClient {
 
-  /** 请求体上限（50MB），超出返回 413 */
-  static final long MAX_BODY_BYTES = 50L * 1024 * 1024;
+  /**
+   * 请求体上限（100MB = 100,000,000 字节，十进制 MB，与 README 及 Javalin maxRequestSize 同一口径），
+   * 超出返回 413。Server 直接引用本常量，避免两处上限漂移。
+   */
+  public static final long MAX_BODY_BYTES = 100_000_000L;
 
   /** 透传给客户端时要排除的响应头：hop-by-hop 头 + 由代理/容器自管的头 */
   private static final Set<String> SKIP_RESPONSE_HEADERS = Set.of(
