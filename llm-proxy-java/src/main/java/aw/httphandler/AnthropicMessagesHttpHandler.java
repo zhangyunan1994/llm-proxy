@@ -1,8 +1,10 @@
 package aw.httphandler;
 
 import aw.auth.ClientAuth;
-import aw.config.ConfigLoader.ProxyConfig;
-import aw.config.ConfigLoader.ProxyConfig.Provider;
+import aw.config.ApiType;
+import aw.config.ProxyConfig;
+import aw.config.ProxyConfig.Model;
+import aw.config.ProxyConfig.Provider;
 import aw.db.ConversationStore;
 import aw.util.StringUtils;
 import com.alibaba.fastjson2.JSON;
@@ -23,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.yaml.snakeyaml.util.Tuple;
 
 /**
  * POST /v1/messages
@@ -82,20 +85,17 @@ public class AnthropicMessagesHttpHandler {
       return;
     }
 
-    ProxyConfig.Model modelConfig = proxyConfig.models().stream().filter(m -> m.name().equals(model)).findFirst().orElse(null);
-    if (modelConfig == null) {
-      ctx.status(400).result("Invalid model");
+    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_CHAT_COMPLETIONS);
+
+    if (modelAndProvider == null) {
+      ctx.status(400).result("Invalid model or provider");
       return;
     }
 
-    Provider provider = proxyConfig.providers().stream()
-        .filter(it -> modelConfig.provider().equals(it.name())).findFirst().orElse(null);
-    if (provider == null) {
-      ctx.status(400).result("Invalid provider");
-      return;
-    }
+    Model modelConfig = modelAndProvider._1();
+    Provider provider = modelAndProvider._2();
 
-    jsonObject.put("model", modelConfig.upstream());
+    jsonObject.put("model", modelConfig.getUpstream());
 
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
@@ -113,17 +113,17 @@ public class AnthropicMessagesHttpHandler {
       chatMessages = parseMessages(jsonObject);
 
       // anthropic_base_url 可选: 缺省回退用 openai_base_url（配置校验保证 openai_base_url 必存在）
-      String anthropicBaseUrl = StringUtils.isBlank(provider.anthropicBaseUrl())
-          ? provider.openaiBaseUrl() : provider.anthropicBaseUrl();
+      String anthropicBaseUrl = StringUtils.isBlank(provider.getAnthropicBaseUrl())
+          ? provider.getOpenaiBaseUrl() : provider.getAnthropicBaseUrl();
 
       HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
           .uri(URI.create(anthropicBaseUrl + "/messages"))
-          .timeout(java.time.Duration.ofSeconds(proxyConfig.server().requestTimeoutSeconds()))
+          .timeout(java.time.Duration.ofSeconds(proxyConfig.getServer().getRequestTimeoutSeconds()))
           .header("Content-Type", "application/json")
           .POST(HttpRequest.BodyPublishers.ofString(jsonObject.toJSONString()));
       // api_key 为空则不发 Authorization（本地自建/免 key 网关）；配置校验保证厂商直连必有 key
-      if (!StringUtils.isBlank(provider.apiKey())) {
-        requestBuilder.header("Authorization", "Bearer " + provider.apiKey());
+      if (!StringUtils.isBlank(provider.getApiKey())) {
+        requestBuilder.header("Authorization", "Bearer " + provider.getApiKey());
       }
       UpstreamHttpClient.forwardClientHeaders(ctx, requestBuilder);
       HttpRequest request = requestBuilder.build();
@@ -141,7 +141,7 @@ public class AnthropicMessagesHttpHandler {
       ctx.contentType(contentType);
       ctx.header("Cache-Control", "no-cache");
 
-      java.time.Duration idleTimeout = java.time.Duration.ofSeconds(proxyConfig.server().readIdleTimeoutSeconds());
+      java.time.Duration idleTimeout = java.time.Duration.ofSeconds(proxyConfig.getServer().getReadIdleTimeoutSeconds());
       if (contentType.contains("text/event-stream")) {
         // 逐块把上游 SSE 内容写回客户端，每块 flush 保证及时下发。
         // 注意：必须用 ctx.res().getOutputStream()（Jetty 原生流，flush 会立即提交 chunk），
@@ -187,7 +187,7 @@ public class AnthropicMessagesHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(API, sessionId, clientApiKey, model, modelConfig.provider(), stream, statusCode,
+      conversationStore.log(API, sessionId, clientApiKey, model, modelConfig.getProvider(), stream, statusCode,
           requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),
