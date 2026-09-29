@@ -85,7 +85,7 @@ public class AnthropicMessagesHttpHandler {
       return;
     }
 
-    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_CHAT_COMPLETIONS);
+    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.ANTHROPIC_MESSAGES);
 
     if (modelAndProvider == null) {
       ctx.status(400).result("Invalid model or provider");

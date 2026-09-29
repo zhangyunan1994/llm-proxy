@@ -85,7 +85,7 @@ public class OpenAIResponseHttpHandler {
       return;
     }
 
-    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_CHAT_COMPLETIONS);
+    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_RESPONSES);
 
     if (modelAndProvider == null) {
       ctx.status(400).result("Invalid model or provider");
@@ -172,11 +172,14 @@ public class OpenAIResponseHttpHandler {
       }
     }
     catch (IOException | InterruptedException e) {
+      log.error("Error processing request", e);
       // 转发或回写失败也要留痕（statusCode 可能为 null）
       errorMessage = e.toString();
       throw e;
     }
     catch (RuntimeException e) {
+      log.error("Error processing request", e);
+
       // 解析/构造阶段的意外异常（如 base_url 含非法字符、畸形消息）：500 且必须留痕审计
       errorMessage = e.toString();
       ctx.status(500).result("Internal Server Error");
