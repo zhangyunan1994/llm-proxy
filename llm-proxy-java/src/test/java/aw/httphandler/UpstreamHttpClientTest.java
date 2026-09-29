@@ -1,6 +1,7 @@
 package aw.httphandler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,7 +20,7 @@ import org.junit.jupiter.api.Test;
 class UpstreamHttpClientTest {
 
   @Test
-  void 看门狗空闲超时解除阻塞读() throws Exception {
+  void watchdogUnblocksReadOnIdleTimeout() throws Exception {
     try (ServerSocket server = new ServerSocket(0)) {
       Thread upstream = new Thread(() -> {
         try (Socket sock = server.accept()) {
@@ -57,7 +58,7 @@ class UpstreamHttpClientTest {
   }
 
   @Test
-  void chat畸形messages解析不抛异常() {
+  void parseMessagesToleratesMalformedChatMessages() {
     JSONObject json = JSON.parseObject("{\"messages\":[\"plain string\",{\"content\":\"no role\"},{\"role\":\"user\",\"content\":\"hi\"}]}");
     List<ConversationStore.ChatMessage> list = OpenAIChatCompletionsHttpHandler.parseMessages(json);
     assertEquals(2, list.size());
@@ -67,7 +68,7 @@ class UpstreamHttpClientTest {
   }
 
   @Test
-  void anthropicSystem字段进消息列表() {
+  void includesAnthropicSystemFieldInMessages() {
     JSONObject json = JSON.parseObject(
         "{\"system\":\"你是助手\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
     List<ConversationStore.ChatMessage> list = AnthropicMessagesHttpHandler.parseMessages(json);
@@ -79,7 +80,7 @@ class UpstreamHttpClientTest {
   }
 
   @Test
-  void anthropicSystem数组拼接text() {
+  void joinsAnthropicSystemTextBlocks() {
     JSONObject json = JSON.parseObject(
         "{\"system\":[{\"type\":\"text\",\"text\":\"甲\"},{\"type\":\"text\",\"text\":\"乙\"}],\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
     List<ConversationStore.ChatMessage> list = AnthropicMessagesHttpHandler.parseMessages(json);
@@ -88,7 +89,31 @@ class UpstreamHttpClientTest {
   }
 
   @Test
-  void responsesInput字符串与数组() {
+  void capsRequestBodyAt100Mb() {
+    // README「请求体上限 100MB」与 Server 的 Javalin maxRequestSize 共用此常量；
+    // 曾因两处分别写 50MB/100MB 而不一致，故固定口径
+    assertEquals(100_000_000L, UpstreamHttpClient.MAX_BODY_BYTES);
+  }
+
+  @Test
+  void skipsHttp2PseudoHeadersAndBlacklistOnPassThrough() {
+    // JDK HttpClient 默认走 HTTP/2，response.headers() 里带 :status。
+    // 透传进 HTTP/1.1 响应即非法头名，httpx/OpenAI SDK 直接抛
+    // RemoteProtocolError: illegal header line（curl 宽容所以此前未暴露）
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader(":status"));
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader(":authority"));
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader("Content-Length"));
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader("content-type"));
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader("Transfer-Encoding"));
+    assertFalse(UpstreamHttpClient.forwardableResponseHeader("Bad Header"));
+    assertTrue(UpstreamHttpClient.forwardableResponseHeader("x-request-id"));
+    assertTrue(UpstreamHttpClient.forwardableResponseHeader("x-ratelimit-remaining-tokens"));
+    assertTrue(UpstreamHttpClient.forwardableResponseHeader("grpc-encoding"));
+    assertTrue(UpstreamHttpClient.forwardableResponseHeader("req-cost-time"));
+  }
+
+  @Test
+  void parsesResponsesInputStringAndArray() {
     List<ConversationStore.ChatMessage> str = OpenAIResponseHttpHandler.parseMessages(
         JSON.parseObject("{\"input\":\"直接输入\"}"));
     assertEquals(1, str.size());

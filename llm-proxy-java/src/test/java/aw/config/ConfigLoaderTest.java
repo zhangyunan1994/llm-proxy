@@ -32,7 +32,7 @@ class ConfigLoaderTest {
       """;
 
   @Test
-  void 合法配置解析并带默认超时() {
+  void parsesValidConfigWithDefaultTimeouts() {
     ProxyConfig config = ConfigLoader.parse(VALID, "test");
     assertEquals(18080, config.getServer().getPort());
     assertEquals("127.0.0.1", config.getServer().getHost());
@@ -47,7 +47,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void 模型元数据解析() {
+  void parsesModelMetadata() {
     String yaml = VALID.replace("    upstream: MiMo-v2.6-Pro\n",
         "    upstream: Up-M\n    max_tokens: 100\n    context_length: 2048\n");
     ProxyConfig.Model model = ConfigLoader.parse(yaml, "test").getModels().get(0);
@@ -58,14 +58,14 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void upstream缺失报错() {
+  void rejectsModelWithoutUpstream() {
     String yaml = VALID.replace("    upstream: MiMo-v2.6-Pro\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("model [m1] 缺少 upstream"));
   }
 
   @Test
-  void 缺省端口与主机走默认值() {
+  void defaultsPortAndHostWhenOmitted() {
     String yaml = VALID.replace("  port: 18080\n", "").replace("  host: 127.0.0.1\n", "");
     ProxyConfig config = ConfigLoader.parse(yaml, "test");
     // 缺省端口 18080、缺省地址 127.0.0.1（以告警形式提示，不阻断启动）
@@ -74,7 +74,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void server未配置报错() {
+  void rejectsMissingServerSection() {
     String yaml = """
         providers:
           - name: p
@@ -91,21 +91,21 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void clientApiKeys缺失报错() {
+  void rejectsMissingClientApiKeys() {
     String yaml = VALID.replace("  client_api_keys: [\"sk-client\"]\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("server.client_api_keys 未配置"));
   }
 
   @Test
-  void 空clientKey条目启动报错() {
+  void rejectsBlankClientApiKey() {
     String yaml = VALID.replace("client_api_keys: [\"sk-client\"]", "client_api_keys: [\"\"]");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("server.client_api_keys 不能包含空字符串"));
   }
 
   @Test
-  void 标量clientApiKeys按单个key解析() {
+  void parsesScalarClientApiKeyAsSingleElementList() {
     // 当前实现（fastjson2 解析）把标量当成单元素列表；老版本的"必须是字符串列表"校验已随重构移除
     String yaml = VALID.replace("client_api_keys: [\"sk-client\"]", "client_api_keys: \"sk-client\"");
     ProxyConfig config = ConfigLoader.parse(yaml, "test");
@@ -113,7 +113,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void providers未配置报错() {
+  void rejectsMissingProviders() {
     String yaml = """
         server:
           port: 18080
@@ -124,7 +124,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void models未配置报错() {
+  void rejectsMissingModels() {
     String yaml = """
         server:
           port: 18080
@@ -139,7 +139,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void 厂商域名缺api_key启动报错() {
+  void requiresApiKeyForBuiltInVendorDomain() {
     String yaml = VALID.replace("http://127.0.0.1:9999/v1", "https://api.deepseek.com/v1")
         .replace("    api_key: \"sk-up\"\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -147,28 +147,28 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void 子域名也命中厂商校验() {
+  void appliesVendorApiKeyRuleToSubdomains() {
     String yaml = VALID.replace("http://127.0.0.1:9999/v1", "https://dashscope.aliyuncs.com/v1")
         .replace("    api_key: \"sk-up\"\n", "");
     assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
   }
 
   @Test
-  void 端口超范围报错() {
+  void rejectsPortOutOfRange() {
     String yaml = VALID.replace("port: 18080", "port: 99999");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("server.port 端口超出范围(1-65535): 99999"));
   }
 
   @Test
-  void provider缺少openaiBaseUrl报错() {
+  void rejectsProviderWithoutOpenaiBaseUrl() {
     String yaml = VALID.replace("    openai_base_url: \"http://127.0.0.1:9999/v1\"\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("缺少 openai_base_url"));
   }
 
   @Test
-  void provider缺少name报错() {
+  void rejectsProviderWithoutName() {
     String yaml = """
         server:
           port: 18080
@@ -187,7 +187,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void 重复provider名报错() {
+  void rejectsDuplicateProviderName() {
     String yaml = """
         server:
           port: 18080
@@ -210,21 +210,21 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void model缺少provider报错() {
+  void rejectsModelWithoutProvider() {
     String yaml = VALID.replace("    provider: local\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("model [m1] 缺少 provider"));
   }
 
   @Test
-  void model引用不存在的provider报错() {
+  void rejectsModelReferencingUnknownProvider() {
     String yaml = VALID.replace("    provider: local\n", "    provider: nope\n");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("引用了不存在的 provider: nope"));
   }
 
   @Test
-  void rerank能力路由校验() {
+  void rejectsRerankCapabilityUnsupportedByProvider() {
     // capability 是单值：model 只声明 rerank，provider 不支持 rerank 即报错
     String yaml = VALID.replace("    capability: chat\n", "    capability: rerank\n")
         .replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
@@ -235,7 +235,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void embeddings能力路由校验() {
+  void rejectsEmbeddingsCapabilityUnsupportedByProvider() {
     String yaml = VALID.replace("    capability: chat\n", "    capability: embeddings\n")
         .replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
             "supported_api_types: [\"openai.chat.completions\"]");
@@ -245,7 +245,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void chat能力需要至少一种chat格式() {
+  void rejectsChatCapabilityWithoutChatApiType() {
     String yaml = VALID.replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
         "supported_api_types: [\"embeddings\", \"rerank\"]");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -253,7 +253,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void supportedApiTypes为空报错() {
+  void rejectsEmptySupportedApiTypes() {
     String yaml = VALID.replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
         "supported_api_types: []");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -261,7 +261,7 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void supportedApiTypes非法值报错() {
+  void rejectsInvalidSupportedApiType() {
     String yaml = VALID.replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
         "supported_api_types: [\"chatgpt\"]");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -269,21 +269,21 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void capability缺失报错() {
+  void rejectsMissingCapability() {
     String yaml = VALID.replace("    capability: chat\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("model [m1] 必须配置 capability（不可为空）"));
   }
 
   @Test
-  void capability非法值报错() {
+  void rejectsInvalidCapability() {
     String yaml = VALID.replace("    capability: chat\n", "    capability: vision\n");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("capability 非法值: vision（合法: chat / embeddings / rerank）"));
   }
 
   @Test
-  void 重复模型名报错() {
+  void rejectsDuplicateModelName() {
     String yaml = VALID.replace("    capability: chat\n",
         "    capability: chat\n"
             + "  - name: m1\n"

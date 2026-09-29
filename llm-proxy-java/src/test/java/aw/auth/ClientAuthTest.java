@@ -12,14 +12,14 @@ import org.junit.jupiter.api.Test;
 class ClientAuthTest {
 
   @Test
-  void bearerToken解析标准头() {
+  void parsesBearerTokenFromStandardHeader() {
     assertEquals("sk-abc", ClientAuth.bearerToken("Bearer sk-abc"));
     assertEquals("sk-abc", ClientAuth.bearerToken("bearer sk-abc"));
     assertEquals("sk-abc", ClientAuth.bearerToken("BEARER   sk-abc  "));
   }
 
   @Test
-  void bearerToken拒绝缺失与畸形头() {
+  void rejectsMissingOrMalformedBearerHeader() {
     assertNull(ClientAuth.bearerToken((String) null));
     assertNull(ClientAuth.bearerToken(""));
     assertNull(ClientAuth.bearerToken("Bearer"));
@@ -29,7 +29,7 @@ class ClientAuthTest {
   }
 
   @Test
-  void matches命中与拒绝() {
+  void matchesKnownKeyAndRejectsOthers() {
     List<String> keys = List.of("key-one", "key-two");
     assertTrue(ClientAuth.matches("key-one", keys));
     assertTrue(ClientAuth.matches("key-two", keys));

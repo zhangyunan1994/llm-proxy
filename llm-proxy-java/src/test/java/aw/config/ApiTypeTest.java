@@ -15,7 +15,7 @@ import org.yaml.snakeyaml.util.Tuple;
 class ApiTypeTest {
 
   @Test
-  void apiType按字面值解析且区分大小写() {
+  void parsesApiTypeLiteralCaseSensitively() {
     assertEquals(Optional.of(ApiType.OPENAI_CHAT_COMPLETIONS), ApiType.parse("openai.chat.completions"));
     assertEquals(Optional.of(ApiType.RERANK), ApiType.parse("rerank"));
     // 区分大小写与历史 Set.contains 行为一致，非法/空值返回 empty 而不是抛异常
@@ -25,7 +25,7 @@ class ApiTypeTest {
   }
 
   @Test
-  void chatFamily由枚举表达而不是手工子集() {
+  void expressesChatFamilyViaEnumFlag() {
     assertTrue(ApiType.OPENAI_CHAT_COMPLETIONS.isChat());
     assertTrue(ApiType.OPENAI_RESPONSES.isChat());
     assertTrue(ApiType.ANTHROPIC_MESSAGES.isChat());
@@ -38,14 +38,14 @@ class ApiTypeTest {
   }
 
   @Test
-  void 合法值提示文案与配置报错保持一致() {
+  void keepsLegalValueHintsInSyncWithConfigErrors() {
     assertEquals("openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank",
         ApiType.legalValues());
     assertEquals("chat / embeddings / rerank", Capability.legalValues());
   }
 
   @Test
-  void capability按字面值解析() {
+  void parsesCapabilityLiteral() {
     assertEquals(Optional.of(Capability.CHAT), Capability.parse("chat"));
     assertEquals(Optional.of(Capability.EMBEDDINGS), Capability.parse("embeddings"));
     assertEquals(Optional.empty(), Capability.parse("CHAT"));
@@ -56,7 +56,7 @@ class ApiTypeTest {
   }
 
   @Test
-  void chat能力按chat类apiType路由() {
+  void routesChatCapabilityByChatApiType() {
     ProxyConfig config = configWith("chat", List.of("openai.chat.completions", "anthropic.messages"));
 
     Tuple<ProxyConfig.Model, ProxyConfig.Provider> hit =
@@ -72,7 +72,7 @@ class ApiTypeTest {
   }
 
   @Test
-  void chat能力要求provider声明该具体chat格式() {
+  void requiresProviderToDeclareSpecificChatApiType() {
     // 启动校验只要求 provider 至少一种 chat 格式；具体请求走哪种格式由这里把关
     ProxyConfig config = configWith("chat", List.of("anthropic.messages"));
     assertNull(config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS));
@@ -80,7 +80,7 @@ class ApiTypeTest {
   }
 
   @Test
-  void rerank与embeddings能力按对应apiType路由() {
+  void routesRerankAndEmbeddingsByMatchingApiType() {
     ProxyConfig rerank = configWith("rerank", List.of("rerank"));
     assertNotNull(rerank.findModelAndProvider("m1", ApiType.RERANK));
     assertNull(rerank.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS));
@@ -91,12 +91,22 @@ class ApiTypeTest {
   }
 
   @Test
-  void 非法或缺失的capability匹配不到任何api() {
+  void matchesNoApiTypeForInvalidOrMissingCapability() {
     // 非法值与缺失值都解析不出 Capability，两个分支都不成立 => null（不抛 NPE）
     ProxyConfig invalid = configWith("vision", List.of("openai.chat.completions"));
     assertNull(invalid.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS));
     ProxyConfig missing = configWith(null, List.of("openai.chat.completions"));
     assertNull(missing.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS));
+  }
+
+  @Test
+  void routesResponsesEndpointByOpenaiResponsesApiType() {
+    // provider 只声明 openai.responses 时，/v1/responses 必须能命中、
+    // 而按 chat.completions 校验会误判成 400（handler 传错 ApiType 的回归）
+    ProxyConfig config = configWith("chat", List.of("openai.responses"));
+    assertNotNull(config.findModelAndProvider("m1", ApiType.OPENAI_RESPONSES),
+        "只声明 openai.responses 的 provider 应能服务 /v1/responses");
+    assertNull(config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS));
   }
 
   /** 单 provider 单 model 的最小配置：capability 单值 + provider 的 supported_api_types */
@@ -108,7 +118,7 @@ class ApiTypeTest {
   }
 
   @Test
-  void 厂商域名表从资源文件加载() {
+  void loadsVendorDomainListFromResource() {
     // 资源缺失时 KeyRequiredDomains 静态初始化即抛异常，这里断言确实加载到了数据
     assertTrue(KeyRequiredDomains.size() > 300, "域名清单应从 key-required-domains.txt 加载: "
         + KeyRequiredDomains.size());

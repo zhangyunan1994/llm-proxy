@@ -18,7 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
 class ConversationStoreTest {
 
   @Test
-  void log写入conversation与messages(@TempDir Path tmp) throws Exception {
+  void logPersistsConversationAndMessages(@TempDir Path tmp) throws Exception {
     ConversationStore store = new ConversationStore(tmp.resolve("t.db").toString());
     store.log("openai.chat.completions", "sess-1", "client-key", "m1", "p1", true, 200,
         "{\"model\":\"m1\"}", "{\"ok\":true}", 10, 20, 30, 4, 123L, null,
@@ -51,7 +51,7 @@ class ConversationStoreTest {
   }
 
   @Test
-  void 失败请求null字段落库(@TempDir Path tmp) throws Exception {
+  void logPersistsNullFieldsForFailedRequest(@TempDir Path tmp) throws Exception {
     ConversationStore store = new ConversationStore(tmp.resolve("t.db").toString());
     store.log("rerank", null, null, "m1", null, false, null,
         "{}", null, null, null, null, null, null, "boom", null);
@@ -67,7 +67,7 @@ class ConversationStoreTest {
   }
 
   @Test
-  void 旧库自动补列(@TempDir Path tmp) throws Exception {
+  void migratesLegacySchemaByAddingColumns(@TempDir Path tmp) throws Exception {
     String db = tmp.resolve("legacy.db").toString();
     // 建一个没有 api/cache_tokens/provider/client_api_key 列的旧库
     try (Connection c = DriverManager.getConnection("jdbc:sqlite:" + db);
