@@ -7,6 +7,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -95,17 +96,42 @@ public final class UpstreamHttpClient {
 
   /**
    * 把上游响应头透传给客户端（限流头 x-ratelimit-*、请求 ID 等客户端 SDK 依赖）。
-   * hop-by-hop 头及由代理自管的头排除在外；多值同名头用 addHeader 逐份追加（set 语义会让第二份覆盖第一份）。
+   * hop-by-hop 头、黑名单头、以及 {@link #forwardableResponseHeader(String)} 判定不合法的头名
+   * （HTTP/2 伪头 :status 等）都排除；多值同名头用 addHeader 逐份追加（set 语义会让第二份覆盖第一份）。
    * Content-Type / Cache-Control 在调用后设置（二者均在排除名单内，不会被透传值干扰）。
    */
   static void passThroughHeaders(HttpResponse<InputStream> response, Context ctx) {
     response.headers().map().forEach((name, values) -> {
-      if (!SKIP_RESPONSE_HEADERS.contains(name.toLowerCase(java.util.Locale.ROOT))) {
+      if (forwardableResponseHeader(name)) {
         for (String value : values) {
           ctx.res().addHeader(name, value);
         }
       }
     });
+  }
+
+  /**
+   * 响应头名能否透传给客户端：先按黑名单排除，再按 RFC 7230 token 校验头名。
+   *
+   * <p>JDK HttpClient 默认走 HTTP/2，上游响应头里带 {@code :status} 这类伪头——它在 HTTP/2 里
+   * 合法，但透传进 HTTP/1.1 响应就是非法头名，httpx/OpenAI SDK 等严格客户端会直接抛
+   * {@code RemoteProtocolError: illegal header line}（curl 之类宽容客户端才不受影响）。
+   */
+  static boolean forwardableResponseHeader(String name) {
+    if (name == null || name.isEmpty()) {
+      return false;
+    }
+    if (SKIP_RESPONSE_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+      return false;
+    }
+    for (int i = 0; i < name.length(); i++) {
+      char c = name.charAt(i);
+      // 可见 ASCII 且非分隔符：':' 命中分隔符，HTTP/2 伪头在此被挡下
+      if (c <= 0x20 || c >= 0x7F || "()<>@,;:\\\"/[]?={}".indexOf(c) >= 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** 把客户端请求头按白名单透传给上游（anthropic-version / anthropic-beta / x-request-id） */
