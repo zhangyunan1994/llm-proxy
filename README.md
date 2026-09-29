@@ -66,13 +66,17 @@ providers:                       # 上游厂商列表，name 不可重复
     api_key: "sk-yyy"
     supported_api_types: ["openai.chat.completions", "anthropic.messages"]
 
-models:                          # 对外模型列表，name 不可重复，provider 必须已存在
+models:                          # 对外模型列表，name 不可重复
   - name: mimo-v2.6-pro          # 对外暴露的模型名（客户端请求里填的名字）
-    provider: xiaomi             # 路由到哪个 provider
-    upstream: MiMo-v2.6-Pro      # 发给上游的真实模型名（必填，缺省启动报错）
+    upstream:                    # 必填且至少一条（缺省/为空启动报错），多条时按 lb_policy 选一条转发
+      - provider: xiaomi         # 必须是 providers 里已存在的 name
+        model: MiMo-v2.6-Pro     # 发给上游的真实模型名（转发时替换对外模型名）
+      - provider: bailian        # 第二条可选：备用上游（provider 同样要支持该 model 的 capability）
+        model: mimo-v2.6-pro
+    lb_policy: first             # 可不填，默认 first；合法值: first（恒取首条）/ random（候选内随机）/ round_robin（按模型名轮询）
     max_tokens: 32768            # 模型元数据，透出在 GET /v1/models（未配置为 null）
     context_length: 262144       # 上下文窗口元数据，透出在 GET /v1/models
-    capability: chat         # 必填（单值）；合法值: chat / embeddings / rerank；透出在 GET /v1/models；与 provider.supported_api_types 联合做路由校验（rerank/embeddings 需对应 apitype，chat 需至少一种 chat 格式）
+    capability: chat             # 必填（单值）；合法值: chat / embeddings / rerank；透出在 GET /v1/models；每条 upstream 的 provider 都必须支持（rerank/embeddings 需对应 apitype，chat 需至少一种 chat 格式）
 ```
 
 ## API 端点
@@ -87,6 +91,8 @@ models:                          # 对外模型列表，name 不可重复，prov
 | `GET /v1/models` | —（本地返回配置的模型列表） | 不落库 |
 
 - 请求中未配置的 `model` 返回 `400 Invalid model`（model 名精确匹配，**区分大小写**）
+- **上游选路**：请求先筛出 `supported_api_types` 声明了本次端点 apiType 的 upstream 候选，
+  再按 `lb_policy` 从候选里选一条（缺省 `first`）；候选为空返回 `400 Invalid model or provider`
 - **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
   缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行。
   CORS 策略为**任意来源放行**（anyHost）：浏览器里任意网页都能向本代理发起请求，实际防线是
