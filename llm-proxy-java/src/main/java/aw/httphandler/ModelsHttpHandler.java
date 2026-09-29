@@ -1,7 +1,7 @@
 package aw.httphandler;
 
-import aw.config.ConfigLoader.ProxyConfig;
-import aw.config.ConfigLoader.ProxyConfig.Model;
+import aw.config.ProxyConfig;
+import aw.config.ProxyConfig.Model;
 import com.alibaba.fastjson2.JSONObject;
 import io.javalin.http.Context;
 import java.util.List;
@@ -9,9 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * GET /v1/models => 模型元数据（id、provider、max_tokens、context_length、capabilities，来自 config.yaml）
+ * GET /v1/models => 模型元数据（id、provider、max_tokens、context_length、capability，来自 config.yaml）
  */
 public class ModelsHttpHandler {
+
   private static final Logger log = LoggerFactory.getLogger(ModelsHttpHandler.class);
 
   private final ProxyConfig proxyConfig;
@@ -26,7 +27,7 @@ public class ModelsHttpHandler {
     jsonObject.put("object", "list");
     jsonObject.put("success", true);
 
-    List<Model> models = proxyConfig.models();
+    List<Model> models = proxyConfig.getModels();
 
     if (models == null) {
       jsonObject.put("data", List.of());
@@ -34,14 +35,14 @@ public class ModelsHttpHandler {
     else {
       List<JSONObject> modelsJson = models.stream().map(model -> {
         JSONObject modelJson = new JSONObject();
-        modelJson.put("id", model.name());
+        modelJson.put("id", model.getName());
         modelJson.put("object", "model");
-        modelJson.put("owned_by", model.provider());
+        modelJson.put("owned_by", model.getProvider());
         modelJson.put("created", 758044800);
         // 元数据字段直出配置（未配置为 null），客户端可据此选型
-        modelJson.put("max_tokens", model.maxTokens());
-        modelJson.put("context_length", model.contextLength());
-        modelJson.put("capabilities", model.capabilities());
+        modelJson.put("max_tokens", model.getMaxTokens());
+        modelJson.put("context_length", model.getContextLength());
+        modelJson.put("capability", model.getCapability());
         return modelJson;
       }).toList();
 

@@ -3,7 +3,7 @@ package aw;
 import aw.auth.ClientAuth;
 import aw.config.ConfigLoader;
 import aw.config.ConfigLoader.ConfigException;
-import aw.config.ConfigLoader.ProxyConfig;
+import aw.config.ProxyConfig;
 import aw.db.ConversationStore;
 import aw.httphandler.AnthropicMessagesHttpHandler;
 import aw.httphandler.EmbeddingsHttpHandler;
@@ -25,7 +25,6 @@ public class Server {
 
   private static final Logger log = LoggerFactory.getLogger(Server.class);
 
-
   public static void main(String[] args) {
 
     ProxyConfig proxyConfig;
@@ -37,17 +36,17 @@ public class Server {
       return;
     }
     log.info("配置加载完成: {} 个 provider, {} 个模型, 监听端口 {}",
-        proxyConfig.providers().size(), proxyConfig.models().size(), proxyConfig.server().port());
-    for (ProxyConfig.Model m : proxyConfig.models()) {
+        proxyConfig.getProviders().size(), proxyConfig.getModels().size(), proxyConfig.getServer().getPort());
+    for (ProxyConfig.Model m : proxyConfig.getModels()) {
       log.info("路由: {} -> {}/{} [{}]",
-          m.name(), m.provider(), m.upstream(), String.join(",", m.capabilities()));
+          m.getName(), m.getProvider(), m.getUpstream(), m.getCapability());
     }
 
     ConversationStore conversationStore = new ConversationStore("sample.db");
 
     // 上游 HttpClient：连接超时来自 server.connect_timeout_seconds，全部 handler 共享
     HttpClient upstreamClient = UpstreamHttpClient.create(
-        java.time.Duration.ofSeconds(proxyConfig.server().connectTimeoutSeconds()));
+        java.time.Duration.ofSeconds(proxyConfig.getServer().getConnectTimeoutSeconds()));
 
     OpenAIChatCompletionsHttpHandler openAIChatCompletionsHttpHandler = new OpenAIChatCompletionsHttpHandler(conversationStore, proxyConfig, upstreamClient);
     OpenAIResponseHttpHandler openAIResponseHttpHandler = new OpenAIResponseHttpHandler(conversationStore, proxyConfig, upstreamClient);
@@ -63,29 +62,24 @@ public class Server {
       config.registerPlugin(new CorsPlugin((c -> c.addRule(CorsRule::anyHost))));
 
       // 客户端鉴权：client_api_keys 非空时，转发端点要求合法 Bearer token（/v1/models 保持开放）
-      List<String> clientApiKeys = proxyConfig.server().clientApiKeys();
-      if (clientApiKeys.isEmpty()) {
-        log.warn("server.client_api_keys 未配置, 转发端点不启用鉴权");
-      } else {
-        log.info("客户端鉴权已启用, 共 {} 个 client_api_keys", clientApiKeys.size());
-        for (String path : new String[] {"/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/embeddings", "/v1/rerank"}) {
-          config.routes.before(path, ctx -> {
-            if ("OPTIONS".equalsIgnoreCase(ctx.req().getMethod())) {
-              // CORS 预检不带 Authorization，放行交给 CorsPlugin 应答
-              return;
-            }
-            String key = ClientAuth.bearerToken(ctx);
-            if (!ClientAuth.matches(key, clientApiKeys)) {
-              // 401 不落库（请求体未读取），至少留日志便于发现暴力尝试
-              log.warn("鉴权失败: {} {} from {}", ctx.req().getMethod(), ctx.path(), ctx.ip());
-              ctx.status(401).result("Unauthorized");
-              ctx.skipRemainingHandlers();
-              return;
-            }
-            ctx.attribute(ClientAuth.CLIENT_KEY_ATTR, key);
-          });
+      List<String> clientApiKeys = proxyConfig.getServer().getClientApiKeys();
+
+      log.info("客户端鉴权已启用, 共 {} 个 client_api_keys", clientApiKeys.size());
+      config.routes.beforeMatched("/v1/*", ctx -> {
+        if ("OPTIONS".equalsIgnoreCase(ctx.req().getMethod())) {
+          // CORS 预检不带 Authorization，放行交给 CorsPlugin 应答
+          return;
         }
-      }
+        String key = ClientAuth.bearerToken(ctx);
+        if (!ClientAuth.matches(key, clientApiKeys)) {
+          // 401 不落库（请求体未读取），至少留日志便于发现暴力尝试
+          log.warn("鉴权失败: {} {} from {}", ctx.req().getMethod(), ctx.path(), ctx.ip());
+          ctx.status(401).result("Unauthorized");
+          ctx.skipRemainingHandlers();
+          return;
+        }
+        ctx.attribute(ClientAuth.CLIENT_KEY_ATTR, key);
+      });
 
       config.routes.post("/v1/chat/completions", openAIChatCompletionsHttpHandler::handle);
       config.routes.post("/v1/responses", openAIResponseHttpHandler::handle);
@@ -94,6 +88,6 @@ public class Server {
       config.routes.post("/v1/rerank", rerankHttpHandler::handle);
       config.routes.get("/v1/models", modelsHttpHandler::handle);
       config.routes.get("/", ctx -> ctx.result("Hello World"));
-    }).start(proxyConfig.server().port());
+    }).start(proxyConfig.getServer().getHost(), proxyConfig.getServer().getPort());
   }
 }
