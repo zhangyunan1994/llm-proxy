@@ -26,8 +26,9 @@ class ConfigLoaderTest {
           supported_api_types: ["openai.chat.completions", "embeddings", "rerank"]
       models:
         - name: m1
-          provider: local
-          upstream: MiMo-v2.6-Pro
+          upstream:
+            - provider: local
+              model: MiMo-v2.6-Pro
           capability: chat
       """;
 
@@ -42,16 +43,19 @@ class ConfigLoaderTest {
     assertEquals(300, config.getServer().getReadIdleTimeoutSeconds());
     assertEquals("local", config.getProviders().get(0).getName());
     assertEquals("m1", config.getModels().get(0).getName());
-    // upstream 必填，原样透出
-    assertEquals("MiMo-v2.6-Pro", config.getModels().get(0).getUpstream());
+    // upstream 必填且至少一条，原样透出；lb_policy 可不填，默认 first
+    assertEquals(1, config.getModels().get(0).getUpstream().size());
+    assertEquals("local", config.getModels().get(0).getUpstream().get(0).getProvider());
+    assertEquals("MiMo-v2.6-Pro", config.getModels().get(0).getUpstream().get(0).getModel());
+    assertEquals("first", config.getModels().get(0).getLbPolicy());
   }
 
   @Test
   void parsesModelMetadata() {
-    String yaml = VALID.replace("    upstream: MiMo-v2.6-Pro\n",
-        "    upstream: Up-M\n    max_tokens: 100\n    context_length: 2048\n");
+    String yaml = VALID.replace("        model: MiMo-v2.6-Pro\n",
+        "        model: Up-M\n    max_tokens: 100\n    context_length: 2048\n");
     ProxyConfig.Model model = ConfigLoader.parse(yaml, "test").getModels().get(0);
-    assertEquals("Up-M", model.getUpstream());
+    assertEquals("Up-M", model.getUpstream().get(0).getModel());
     assertEquals(100, model.getMaxTokens());
     assertEquals(2048, model.getContextLength());
     assertEquals("chat", model.getCapability());
@@ -59,9 +63,9 @@ class ConfigLoaderTest {
 
   @Test
   void rejectsModelWithoutUpstream() {
-    String yaml = VALID.replace("    upstream: MiMo-v2.6-Pro\n", "");
+    String yaml = VALID.replace("    upstream:\n      - provider: local\n        model: MiMo-v2.6-Pro\n", "");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
-    assertTrue(e.getMessage().contains("model [m1] 缺少 upstream"));
+    assertTrue(e.getMessage().contains("model [m1] 必须至少配置一个 upstream"));
   }
 
   @Test
@@ -82,8 +86,9 @@ class ConfigLoaderTest {
             supported_api_types: ["embeddings"]
         models:
           - name: m1
-            provider: p
-            upstream: u1
+            upstream:
+              - provider: p
+                model: u1
             capability: embeddings
         """;
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -178,8 +183,9 @@ class ConfigLoaderTest {
             supported_api_types: ["embeddings"]
         models:
           - name: m1
-            provider: p
-            upstream: u1
+            upstream:
+              - provider: p
+                model: u1
             capability: embeddings
         """;
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -201,8 +207,9 @@ class ConfigLoaderTest {
             supported_api_types: ["embeddings"]
         models:
           - name: m1
-            provider: p
-            upstream: u1
+            upstream:
+              - provider: p
+                model: u1
             capability: embeddings
         """;
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
@@ -210,17 +217,69 @@ class ConfigLoaderTest {
   }
 
   @Test
-  void rejectsModelWithoutProvider() {
-    String yaml = VALID.replace("    provider: local\n", "");
+  void rejectsUpstreamEntryWithoutProvider() {
+    String yaml = VALID.replace("      - provider: local\n        model: MiMo-v2.6-Pro",
+        "      - model: MiMo-v2.6-Pro");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
-    assertTrue(e.getMessage().contains("model [m1] 缺少 provider"));
+    assertTrue(e.getMessage().contains("model [m1] upstream[1] 缺少 provider"));
+  }
+
+  @Test
+  void rejectsUpstreamEntryWithoutModel() {
+    String yaml = VALID.replace("        model: MiMo-v2.6-Pro\n", "");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("model [m1] upstream[1] 缺少 model"));
+  }
+
+  @Test
+  void rejectsEmptyUpstreamList() {
+    String yaml = VALID.replace("    upstream:\n      - provider: local\n        model: MiMo-v2.6-Pro",
+        "    upstream: []");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("model [m1] 必须至少配置一个 upstream"));
+  }
+
+  @Test
+  void defaultsLbPolicyToFirst() {
+    // lb_policy 可不填：校验期补默认值 first（不告警，这是常规写法）
+    ProxyConfig config = ConfigLoader.parse(VALID, "test");
+    assertEquals("first", config.getModels().get(0).getLbPolicy());
+  }
+
+  @Test
+  void parsesConfiguredLbPolicy() {
+    String yaml = VALID.replace("    capability: chat\n", "    lb_policy: round_robin\n    capability: chat\n");
+    assertEquals("round_robin", ConfigLoader.parse(yaml, "test").getModels().get(0).getLbPolicy());
+  }
+
+  @Test
+  void rejectsInvalidLbPolicy() {
+    String yaml = VALID.replace("    capability: chat\n", "    lb_policy: weighted\n    capability: chat\n");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains(
+        "model [m1] lb_policy 非法值: weighted（合法: first / random / round_robin）"));
+  }
+
+  @Test
+  void validatesCapabilityAgainstEveryUpstream() {
+    // 第二条 upstream 的 provider 不支持 chat：即便首条支持也要报错（LB 任意一条都可能被选中转发）
+    String yaml = VALID
+        .replace("supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]",
+            "supported_api_types: [\"openai.chat.completions\", \"embeddings\", \"rerank\"]\n"
+                + "  - name: embedding-only\n"
+                + "    openai_base_url: \"http://127.0.0.1:7777/v1\"\n"
+                + "    supported_api_types: [\"embeddings\"]")
+        .replace("        model: MiMo-v2.6-Pro\n",
+            "        model: MiMo-v2.6-Pro\n      - provider: embedding-only\n        model: Other\n");
+    ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
+    assertTrue(e.getMessage().contains("model [m1] 声明 chat 能力, 但 provider [embedding-only]"));
   }
 
   @Test
   void rejectsModelReferencingUnknownProvider() {
-    String yaml = VALID.replace("    provider: local\n", "    provider: nope\n");
+    String yaml = VALID.replace("      - provider: local\n", "      - provider: nope\n");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
-    assertTrue(e.getMessage().contains("引用了不存在的 provider: nope"));
+    assertTrue(e.getMessage().contains("model [m1] upstream[1] 引用了不存在的 provider: nope"));
   }
 
   @Test
@@ -287,8 +346,9 @@ class ConfigLoaderTest {
     String yaml = VALID.replace("    capability: chat\n",
         "    capability: chat\n"
             + "  - name: m1\n"
-            + "    provider: local\n"
-            + "    upstream: MiMo-v2.6-Pro\n"
+            + "    upstream:\n"
+            + "      - provider: local\n"
+            + "        model: MiMo-v2.6-Pro\n"
             + "    capability: chat\n");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("model name 重复: m1"));

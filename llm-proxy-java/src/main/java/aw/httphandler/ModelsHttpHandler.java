@@ -37,7 +37,10 @@ public class ModelsHttpHandler {
         JSONObject modelJson = new JSONObject();
         modelJson.put("id", model.getName());
         modelJson.put("object", "model");
-        modelJson.put("owned_by", model.getProvider());
+        // owned_by 取首条 upstream 的 provider（多条 upstream 时仅作展示，实际命中由 lb_policy 决定）
+        List<ProxyConfig.Upstream> upstreams = model.getUpstream();
+        modelJson.put("owned_by",
+            upstreams == null || upstreams.isEmpty() ? null : upstreams.get(0).getProvider());
         modelJson.put("created", 758044800);
         // 元数据字段直出配置（未配置为 null），客户端可据此选型
         modelJson.put("max_tokens", model.getMaxTokens());

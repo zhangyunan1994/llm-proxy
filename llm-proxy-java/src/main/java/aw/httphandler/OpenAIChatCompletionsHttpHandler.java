@@ -3,7 +3,6 @@ package aw.httphandler;
 import aw.auth.ClientAuth;
 import aw.config.ApiType;
 import aw.config.ProxyConfig;
-import aw.config.ProxyConfig.Model;
 import aw.config.ProxyConfig.Provider;
 import aw.db.ConversationStore;
 import aw.util.StringUtils;
@@ -25,7 +24,6 @@ import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.yaml.snakeyaml.util.Tuple;
 
 /**
  * POST /v1/chat/completions
@@ -84,17 +82,16 @@ public class OpenAIChatCompletionsHttpHandler {
       return;
     }
 
-    Tuple<Model, Provider> modelAndProvider = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_CHAT_COMPLETIONS);
+    ProxyConfig.Route route = proxyConfig.findModelAndProvider(model, ApiType.OPENAI_CHAT_COMPLETIONS);
 
-    if (modelAndProvider == null) {
+    if (route == null) {
       ctx.status(400).result("Invalid model or provider");
       return;
     }
 
-    Model modelConfig = modelAndProvider._1();
-    Provider provider = modelAndProvider._2();
+    Provider provider = route.provider();
 
-    jsonObject.put("model", modelConfig.getUpstream());
+    jsonObject.put("model", route.upstreamModel());
 
     String sessionId = ctx.header("X-Session-Id");
     String clientApiKey = ctx.attribute(ClientAuth.CLIENT_KEY_ATTR);
@@ -190,7 +187,7 @@ public class OpenAIChatCompletionsHttpHandler {
     }
     finally {
       // 无论成功失败都落库；conversationStore 内部吞掉 DB 异常，不影响转发
-      conversationStore.log(API, sessionId, clientApiKey, model, modelConfig.getProvider(), stream, statusCode,
+      conversationStore.log(API, sessionId, clientApiKey, model, provider.getName(), stream, statusCode,
           requestBody, responseText,
           usage == null ? null : usage.promptTokens(),
           usage == null ? null : usage.completionTokens(),

@@ -8,11 +8,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
-import org.yaml.snakeyaml.util.Tuple;
 
 
 @Setter
@@ -24,6 +26,9 @@ public class ProxyConfig {
   private Server server;
   private List<Provider> providers;
   private List<Model> models;
+
+  /** lb_policy=round_robin 的轮询计数器（按模型名各自计数，进程内内存态，重启归零） */
+  private final Map<String, AtomicInteger> roundRobinCounters = new ConcurrentHashMap<>();
 
   public ProxyConfig(Server server, List<Provider> providers, List<Model> models) {
     this.server = server;
@@ -96,6 +101,9 @@ public class ProxyConfig {
         errors.add("provider [" + name + "] 直连内置厂商域名, 必须配置 api_key");
       }
       List<String> apiTypes = provider.getSupportedApiTypes();
+      if (apiTypes == null) {
+        apiTypes = List.of();
+      }
       if (apiTypes.isEmpty()) {
         errors.add("provider [" + name + "] 必须配置 supported_api_types（不可为空）");
       }
@@ -110,7 +118,7 @@ public class ProxyConfig {
       providerApiTypes.put(name, apiTypes);
     }
 
-    // ---- models(模型唯一校验 + provider 引用校验)----
+    // ---- models(模型唯一校验 + upstream 引用校验)----
     if (models == null || models.isEmpty()) {
       errors.add("models 未配置");
       return;
@@ -130,18 +138,46 @@ public class ProxyConfig {
       if (!modelNames.add(name)) {
         errors.add("model name 重复: " + name);
       }
-      String provider = m.getProvider();
-      if (StringUtils.isBlank(provider)) {
-        errors.add("model [" + name + "] 缺少 provider");
+
+      // upstream 必填且至少一条：每条给出转发用的 provider 与上游真实模型名（转发时用它替换对外模型名）
+      List<Upstream> upstreams = m.getUpstream();
+      if (upstreams == null || upstreams.isEmpty()) {
+        errors.add("model [" + name + "] 必须至少配置一个 upstream");
+        upstreams = List.of();
       }
-      else if (!providerNames.contains(provider)) {
-        errors.add("model [" + name + "] 引用了不存在的 provider: " + provider);
+      else {
+        for (int i = 0; i < upstreams.size(); i++) {
+          Upstream u = upstreams.get(i);
+          String idx = "upstream[" + (i + 1) + "]";
+          if (u == null) {
+            errors.add("model [" + name + "] " + idx + " 不能为空");
+            continue;
+          }
+          if (StringUtils.isBlank(u.getProvider())) {
+            errors.add("model [" + name + "] " + idx + " 缺少 provider");
+            continue;
+          }
+          if (!providerNames.contains(u.getProvider())) {
+            errors.add("model [" + name + "] " + idx + " 引用了不存在的 provider: " + u.getProvider());
+            continue;
+          }
+          if (StringUtils.isBlank(u.getModel())) {
+            errors.add("model [" + name + "] " + idx + " 缺少 model");
+          }
+        }
       }
-      // upstream 必填：转发时用它替换客户端传入的对外模型名
-      if (StringUtils.isBlank(m.getUpstream())) {
-        errors.add("model [" + name + "] 缺少 upstream");
+
+      // lb_policy 可不填，默认 first；填了必须是合法值
+      if (StringUtils.isBlank(m.getLbPolicy())) {
+        m.setLbPolicy(LbPolicy.FIRST.wire());
       }
-      // 路由校验：model 声明的能力必须有 provider 对应支持（supported_api_types 已校验非空）
+      else if (LbPolicy.parse(m.getLbPolicy()).isEmpty()) {
+        errors.add("model [" + name + "] lb_policy 非法值: " + m.getLbPolicy()
+            + "（合法: " + LbPolicy.legalValues() + "）");
+      }
+
+      // 路由校验：model 声明的能力必须由每条 upstream 的 provider 支持
+      // （random/round_robin 下任意一条都可能被选中转发，少一条支持就是线上 4xx/5xx）
       String capability = m.getCapability();
       if (capability == null) {
         errors.add("model [" + name + "] 必须配置 capability（不可为空）");
@@ -152,15 +188,23 @@ public class ProxyConfig {
 
       if (capabilityEnum == null) {
         errors.add("model [" + name + "] capability 非法值: " + capability + "（合法: " + Capability.legalValues() + "）");
+        continue;
       }
 
-      List<String> apiTypes = providerApiTypes.getOrDefault(provider, List.of());
-      if (!apiTypes.isEmpty()) {
+      for (Upstream u : upstreams) {
+        if (u == null || StringUtils.isBlank(u.getProvider()) || !providerNames.contains(u.getProvider())) {
+          continue; // 引用问题上面已逐条报过
+        }
+        String provider = u.getProvider();
+        List<String> apiTypes = providerApiTypes.getOrDefault(provider, List.of());
+        if (apiTypes.isEmpty()) {
+          continue; // supported_api_types 缺失/为空在 provider 段已报过
+        }
         if (capabilityEnum == Capability.RERANK && !apiTypes.contains(ApiType.RERANK.wire())) {
           errors.add("model [" + name + "] 声明 rerank 能力, 但 provider [" + provider
               + "] 的 supported_api_types 不含 " + ApiType.RERANK.wire());
         }
-        if (capabilityEnum  == Capability.EMBEDDINGS && !apiTypes.contains(ApiType.EMBEDDINGS.wire())) {
+        if (capabilityEnum == Capability.EMBEDDINGS && !apiTypes.contains(ApiType.EMBEDDINGS.wire())) {
           errors.add("model [" + name + "] 声明 embeddings 能力, 但 provider [" + provider
               + "] 的 supported_api_types 不含 " + ApiType.EMBEDDINGS.wire());
         }
@@ -173,31 +217,60 @@ public class ProxyConfig {
     }
   }
 
-  public Tuple<Model, Provider> findModelAndProvider(String modelName, ApiType apiType) {
+  /**
+   * 按对外模型名与本次请求的 apiType 找路由：先筛出 provider 声明支持该 apiType 的 upstream 候选，
+   * 再按 model.lb_policy 从候选里选一条（缺省 first）。模型未知或无候选返回 null（不抛异常）。
+   */
+  public Route findModelAndProvider(String modelName, ApiType apiType) {
     // 根据 modelName 找到对应的 Model 配置
     Model model = models.stream().filter(m -> m.getName().equals(modelName)).findFirst().orElse(null);
 
-    if (model == null) {
+    if (model == null || model.getUpstream() == null) {
       return null;
     }
 
-    // 判断当前模型是否支持 apiType, 启动时已经校验了，这里不判空
+    // 能力与 apiType 必须对得上；capability 非法/缺失解析不出枚举 => 两个分支都不成立（启动时已校验合法性）
     Capability capability = Capability.parse(model.getCapability()).orElse(null);
+    if ((capability == Capability.RERANK && apiType == ApiType.RERANK)
+        || (capability == Capability.EMBEDDINGS && apiType == ApiType.EMBEDDINGS)
+        || (capability == Capability.CHAT && apiType.isChat())) {
+      // 候选：provider 存在且 supported_api_types 声明了本次 apiType 的 upstream
+      List<Upstream> candidates = model.getUpstream().stream()
+          .filter(u -> u != null && !StringUtils.isBlank(u.getProvider()))
+          .filter(u -> supportedApiTypes(u.getProvider()).contains(apiType.wire()))
+          .toList();
 
-    if ((capability == Capability.RERANK && apiType == ApiType.RERANK) || (capability == Capability.EMBEDDINGS && apiType == ApiType.EMBEDDINGS)) {
-      return new Tuple<>(model, providers.stream()
-          .filter(p -> p.getName().equals(model.getProvider())).findFirst().orElse(null));
-    }
-    else if (capability == Capability.CHAT && apiType.isChat()) {
-      Provider provider = providers.stream()
-          .filter(p -> p.getName().equals(model.getProvider())).findFirst().orElse(null);
-
-      if (provider.getSupportedApiTypes().contains(apiType.wire())) {
-        return new Tuple<>(model, provider);
+      if (!candidates.isEmpty()) {
+        Upstream chosen = chooseUpstream(model, candidates);
+        Provider provider = providers.stream()
+            .filter(p -> p.getName().equals(chosen.getProvider())).findFirst().orElse(null);
+        return new Route(model, provider, chosen.getModel());
       }
     }
 
     return null;
+  }
+
+  /** 按 lb_policy 在候选里选一条：first 恒取首条、random 均匀随机、round_robin 按模型名轮询 */
+  private Upstream chooseUpstream(Model model, List<Upstream> candidates) {
+    LbPolicy policy = LbPolicy.parse(model.getLbPolicy()).orElse(LbPolicy.FIRST);
+    return switch (policy) {
+      case RANDOM -> candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+      case ROUND_ROBIN -> {
+        int seq = roundRobinCounters.computeIfAbsent(model.getName(), key -> new AtomicInteger()).getAndIncrement();
+        yield candidates.get(Math.floorMod(seq, candidates.size()));
+      }
+      case FIRST -> candidates.get(0);
+    };
+  }
+
+  /** provider 的 supported_api_types；provider 不存在或未配置该字段时视为不支持任何 apiType（不传播 null） */
+  private List<String> supportedApiTypes(String providerName) {
+    return providers.stream()
+        .filter(p -> p.getName().equals(providerName))
+        .findFirst()
+        .map(Provider::getSupportedApiTypes)
+        .orElse(List.of());
   }
 
   /**
@@ -260,7 +333,8 @@ public class ProxyConfig {
   }
 
   /**
-   * upstream 必填:转发给上游的真实模型名（对外名是 name）
+   * upstream 必填且至少一条:每条 = 转发用的 provider + 发给上游的真实模型名（对外名是 name），
+   * 多条时按 lb_policy 从中选一条转发
    */
   @Setter
   @Getter
@@ -268,21 +342,51 @@ public class ProxyConfig {
   @ToString
   public static class Model {
     private String name;
-    private String provider;
-    private String upstream;
+    private List<Upstream> upstream;
+    private String lbPolicy;
     private Integer maxTokens;
     private Integer contextLength;
     private String capability;
 
-    public Model(String name, String provider, String upstream,
+    public Model(String name, List<Upstream> upstream, String lbPolicy,
                  Integer maxTokens, Integer contextLength, String capability) {
       this.name = name;
-      this.provider = provider;
       this.upstream = upstream;
+      this.lbPolicy = lbPolicy;
       this.maxTokens = maxTokens;
       this.contextLength = contextLength;
       this.capability = capability;
     }
 
+    /** 单 upstream 的便捷构造：lb_policy 留空，走 validateConfig 的默认值 first */
+    public Model(String name, String provider, String upstreamModel,
+                 Integer maxTokens, Integer contextLength, String capability) {
+      this(name, List.of(new Upstream(provider, upstreamModel)), null, maxTokens, contextLength, capability);
+    }
+
+  }
+
+  /**
+   * 一条上游路由：provider 决定 base_url/api_key，model 是发给上游的真实模型名
+   */
+  @Setter
+  @Getter
+  @NoArgsConstructor
+  @ToString
+  public static class Upstream {
+    private String provider;
+    private String model;
+
+    public Upstream(String provider, String model) {
+      this.provider = provider;
+      this.model = model;
+    }
+
+  }
+
+  /**
+   * findModelAndProvider 的返回:model 配置 + 命中的 provider + 按 lb_policy 选出的上游真实模型名
+   */
+  public record Route(Model model, Provider provider, String upstreamModel) {
   }
 }

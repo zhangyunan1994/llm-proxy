@@ -6,12 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.yaml.snakeyaml.util.Tuple;
 
-/** 枚举化后的取值解析 + capability 路由查找 + 厂商域名资源加载（A+B 重构的回归） */
+/** 枚举化的取值解析（ApiType/Capability/LbPolicy）+ capability 路由查找 + 厂商域名资源加载 */
 class ApiTypeTest {
 
   @Test
@@ -56,14 +57,27 @@ class ApiTypeTest {
   }
 
   @Test
+  void parsesLbPolicyLiteral() {
+    assertEquals(Optional.of(LbPolicy.FIRST), LbPolicy.parse("first"));
+    assertEquals(Optional.of(LbPolicy.RANDOM), LbPolicy.parse("random"));
+    assertEquals(Optional.of(LbPolicy.ROUND_ROBIN), LbPolicy.parse("round_robin"));
+    // 区分大小写，非法/空值返回 empty 而不是抛异常
+    assertEquals(Optional.empty(), LbPolicy.parse("FIRST"));
+    assertEquals(Optional.empty(), LbPolicy.parse("weighted"));
+    assertEquals(Optional.empty(), LbPolicy.parse(null));
+    assertEquals("first / random / round_robin", LbPolicy.legalValues());
+    assertEquals("round_robin", LbPolicy.ROUND_ROBIN.toString());
+  }
+
+  @Test
   void routesChatCapabilityByChatApiType() {
     ProxyConfig config = configWith("chat", List.of("openai.chat.completions", "anthropic.messages"));
 
-    Tuple<ProxyConfig.Model, ProxyConfig.Provider> hit =
-        config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS);
-    assertNotNull(hit, "命中应返回 model+provider");
-    assertEquals("m1", hit._1().getName());
-    assertEquals("p", hit._2().getName());
+    ProxyConfig.Route hit = config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS);
+    assertNotNull(hit, "命中应返回 model+provider+上游模型名");
+    assertEquals("m1", hit.model().getName());
+    assertEquals("p", hit.provider().getName());
+    assertEquals("up", hit.upstreamModel());
     assertNotNull(config.findModelAndProvider("m1", ApiType.ANTHROPIC_MESSAGES),
         "provider 声明过的 chat 格式同样命中");
 
@@ -115,6 +129,80 @@ class ApiTypeTest {
         new ProxyConfig.Provider("p", "http://127.0.0.1:1/v1", null, "k", providerApiTypes);
     ProxyConfig.Model model = new ProxyConfig.Model("m1", "p", "up", null, null, capability);
     return new ProxyConfig(null, List.of(provider), List.of(model));
+  }
+
+  @Test
+  void picksFirstUpstreamWhenLbPolicyOmitted() {
+    ProxyConfig config = twoUpstreamConfig(null);
+    // lb_policy 可不填 => 恒取首条，多次调用结果稳定
+    for (int i = 0; i < 20; i++) {
+      ProxyConfig.Route route = config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS);
+      assertNotNull(route, "首条即候选，应命中");
+      assertEquals("p1", route.provider().getName());
+      assertEquals("up1", route.upstreamModel());
+    }
+  }
+
+  @Test
+  void roundRobinAlternatesAcrossUpstreams() {
+    ProxyConfig config = twoUpstreamConfig("round_robin");
+    // 计数器按模型名从 0 起，前两轮应依次命中 p1/p2，如此往复
+    for (int i = 0; i < 6; i++) {
+      ProxyConfig.Route route = config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS);
+      assertNotNull(route);
+      String expectProvider = i % 2 == 0 ? "p1" : "p2";
+      String expectModel = i % 2 == 0 ? "up1" : "up2";
+      assertEquals(expectProvider, route.provider().getName());
+      assertEquals(expectModel, route.upstreamModel());
+    }
+  }
+
+  @Test
+  void randomStaysWithinCandidates() {
+    ProxyConfig config = twoUpstreamConfig("random");
+    Set<String> seen = new HashSet<>();
+    for (int i = 0; i < 50; i++) {
+      ProxyConfig.Route route = config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS);
+      assertNotNull(route);
+      seen.add(route.provider().getName());
+    }
+    // 只在候选里选：50 次内两条都应至少命中一次（全不命中的概率约 2^-49）
+    assertEquals(Set.of("p1", "p2"), seen);
+  }
+
+  @Test
+  void filtersCandidatesByRequestedApiType() {
+    // 两条 upstream 各自只支持一种 chat 格式：候选先按 apiType 过滤，再谈 lb_policy
+    ProxyConfig.Provider p1 =
+        new ProxyConfig.Provider("p1", "http://127.0.0.1:1/v1", null, "k", List.of("anthropic.messages"));
+    ProxyConfig.Provider p2 =
+        new ProxyConfig.Provider("p2", "http://127.0.0.1:2/v1", null, "k", List.of("openai.responses"));
+    ProxyConfig.Model model = new ProxyConfig.Model("m1",
+        List.of(new ProxyConfig.Upstream("p1", "up1"), new ProxyConfig.Upstream("p2", "up2")),
+        "round_robin", null, null, "chat");
+    ProxyConfig config = new ProxyConfig(null, List.of(p1, p2), List.of(model));
+
+    ProxyConfig.Route messages = config.findModelAndProvider("m1", ApiType.ANTHROPIC_MESSAGES);
+    assertEquals("p1", messages.provider().getName());
+    assertEquals("up1", messages.upstreamModel());
+    ProxyConfig.Route responses = config.findModelAndProvider("m1", ApiType.OPENAI_RESPONSES);
+    assertEquals("p2", responses.provider().getName());
+    assertEquals("up2", responses.upstreamModel());
+    // 候选为空返回 null，而不是选中一条打到上游 404
+    assertNull(config.findModelAndProvider("m1", ApiType.OPENAI_CHAT_COMPLETIONS),
+        "没有 upstream 支持该 chat 格式 => 无候选");
+  }
+
+  /** 双 upstream 的最小配置：p1/p2 都支持 chat.completions，便于观察 lb_policy 的选路 */
+  private static ProxyConfig twoUpstreamConfig(String lbPolicy) {
+    ProxyConfig.Provider p1 =
+        new ProxyConfig.Provider("p1", "http://127.0.0.1:1/v1", null, "k", List.of("openai.chat.completions"));
+    ProxyConfig.Provider p2 =
+        new ProxyConfig.Provider("p2", "http://127.0.0.1:2/v1", null, "k", List.of("openai.chat.completions"));
+    ProxyConfig.Model model = new ProxyConfig.Model("m1",
+        List.of(new ProxyConfig.Upstream("p1", "up1"), new ProxyConfig.Upstream("p2", "up2")),
+        lbPolicy, null, null, "chat");
+    return new ProxyConfig(null, List.of(p1, p2), List.of(model));
   }
 
   @Test

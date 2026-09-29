@@ -17,6 +17,7 @@ import io.javalin.plugin.bundled.CorsPlugin;
 import io.javalin.plugin.bundled.CorsPluginConfig.CorsRule;
 import java.net.http.HttpClient;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,8 +39,10 @@ public class Server {
     log.info("配置加载完成: {} 个 provider, {} 个模型, 监听端口 {}",
         proxyConfig.getProviders().size(), proxyConfig.getModels().size(), proxyConfig.getServer().getPort());
     for (ProxyConfig.Model m : proxyConfig.getModels()) {
-      log.info("路由: {} -> {}/{} [{}]",
-          m.getName(), m.getProvider(), m.getUpstream(), m.getCapability());
+      String ups = m.getUpstream() == null ? "-"
+          : m.getUpstream().stream().map(u -> u.getProvider() + "/" + u.getModel())
+              .collect(Collectors.joining(", "));
+      log.info("路由: {} -> {} [{}] lb={}", m.getName(), ups, m.getCapability(), m.getLbPolicy());
     }
 
     ConversationStore conversationStore = new ConversationStore("sample.db");
