@@ -1,12 +1,16 @@
 package aw.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import aw.config.ConfigLoader.ConfigException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * 配置校验核心路径：默认值、鉴权 key 校验、厂商域名强制 key、端口/超时校验、capability 路由校验。
@@ -352,5 +356,50 @@ class ConfigLoaderTest {
             + "    capability: chat\n");
     ConfigException e = assertThrows(ConfigException.class, () -> ConfigLoader.parse(yaml, "test"));
     assertTrue(e.getMessage().contains("model name 重复: m1"));
+  }
+
+  @Test
+  void loadsConfigFromRelaySystemProperty(@TempDir Path tmp) throws Exception {
+    Path file = tmp.resolve("given.yaml");
+    Files.writeString(file, VALID);
+    String previous = System.getProperty("llm-relay.config");
+    try {
+      System.setProperty("llm-relay.config", file.toString());
+      // 第一优先级：显式指定的文件一定被读到
+      assertEquals(18080, ConfigLoader.load().getServer().getPort());
+    }
+    finally {
+      restoreProperty("llm-relay.config", previous);
+    }
+  }
+
+  @Test
+  void fallsBackToHomeConfigWhenCwdHasNone(@TempDir Path tmp) throws Exception {
+    // 前置条件：测试工作目录不能有 ./config.yaml，否则第 2 优先级先命中、根本走不到 $HOME 这一步
+    assertFalse(Files.isReadable(Path.of("config.yaml")), "工作目录存在 ./config.yaml，本用例不适用");
+    Path homeConfig = tmp.resolve(".config/llm-relay/config.yaml");
+    Files.createDirectories(homeConfig.getParent());
+    Files.writeString(homeConfig, VALID);
+    String previousProp = System.getProperty("llm-relay.config");
+    String previousHome = System.getProperty("user.home");
+    try {
+      System.clearProperty("llm-relay.config");
+      System.setProperty("user.home", tmp.toString());
+      // 第三优先级：属性与 ./config.yaml 都没有时读 $HOME/.config/llm-relay/config.yaml
+      assertEquals(18080, ConfigLoader.load().getServer().getPort());
+    }
+    finally {
+      restoreProperty("llm-relay.config", previousProp);
+      restoreProperty("user.home", previousHome);
+    }
+  }
+
+  private static void restoreProperty(String key, String value) {
+    if (value == null) {
+      System.clearProperty(key);
+    }
+    else {
+      System.setProperty(key, value);
+    }
   }
 }

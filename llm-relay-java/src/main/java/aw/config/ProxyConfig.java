@@ -305,6 +305,8 @@ public class ProxyConfig {
     private int port;
     private String host;
     private List<String> clientApiKeys;
+    /** 数据库文件路径（可选）：-Dllm-relay.db 优先级更高，两者都缺省时用 $HOME/.config/llm-relay/llm-relay.db */
+    private String dbPath;
     private Integer connectTimeoutSeconds;
     private Integer requestTimeoutSeconds;
     private Integer readIdleTimeoutSeconds;

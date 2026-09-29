@@ -1,0 +1,100 @@
+server:
+  host: 0.0.0.0
+  port: 18080
+  db_path: ./llm-relay.db
+  client_api_keys:
+    - sk-other
+    - sk-mimocode
+    - sk-opencode
+    - sk-claude
+    - sk-pi
+    - sk-pi-desktop
+    - sk-dsh-web
+    - sk-dsh-desktop
+
+providers:
+  - name: alibaba
+    openai_base_url: https://xxxx.aliyuncs.com/compatible-mode/v1
+    api_key: sk-xx
+    supported_api_types:
+      - openai.chat.completions
+      - openai.responses
+      - anthropic.messages
+      - embeddings
+      - rerank
+  - name: xiaomi
+    openai_base_url: https://api.xiaomimimo.com/v1
+    anthropic_base_url: https://api.xiaomimimo.com/anthropic/v1
+    api_key: sk-xx
+    supported_api_types:
+      - openai.chat.completions
+      - openai.responses
+      - anthropic.messages
+  - name: deepseek
+    openai_base_url: https://api.deepseek.com
+    anthropic_base_url: https://api.deepseek.com/anthropic
+    api_key: sk-xx
+    supported_api_types:
+      - openai.chat.completions
+      - openai.responses
+      - anthropic.messages
+  - name: llama-rerank
+    openai_base_url: http://127.0.0.1:8002/v1
+    supported_api_types:
+      - rerank
+  - name: llama-embedding
+    openai_base_url: http://127.0.0.1:8001/v1
+    supported_api_types:
+      - embeddings
+models:
+  - name: kimi-k3
+    upstream:
+      - provider: alibaba
+        model: kimi-k3
+    max_tokens: 131072
+    context_length: 1000000
+    capability: chat
+  - name: qwen3.8
+    upstream:
+      - provider: alibaba
+        model: qwen3.8-flash
+      - provider: alibaba
+        model: qwen3.8-max-0902
+      - provider: alibaba
+        model: qwen3.8-2.4t-a95b
+    lb_policy: random
+    max_tokens: 131072
+    context_length: 1000000
+    capability: chat
+  - name: qwen3.8-27b
+    upstream:
+      - provider: alibaba
+        model: qwen3.8-27b
+    lb_policy: first
+    max_tokens: 131072
+    context_length: 1000000
+    capability: chat
+  - name: mimo-v2.6-pro
+    upstream:
+      - provider: xiaomi
+        model: mimo-v2.6-pro
+    max_tokens: 131072
+    context_length: 1048576
+    capability: chat
+  - name: mimo-v2.6-flash
+    upstream:
+      - provider: xiaomi
+        model: mimo-v2.6-flash
+    max_tokens: 131072
+    context_length: 1048576
+    capability: chat
+  - name: bge-reranker-v2-m3
+    upstream:
+      - provider: llama-rerank
+        model: bge-reranker-v2-m3-Q5_K_M
+    capability: rerank
+  - name: bge-m3-f16
+    upstream:
+      - provider: llama-embedding
+        model: bge-m3-f16
+    capability: embeddings

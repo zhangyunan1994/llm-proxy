@@ -1,4 +1,4 @@
-# llm-proxy
+# llm-relay
 
 Java 实现的 LLM API 网关。对外提供统一的 OpenAI / Anthropic 风格入口，按模型名路由到不同
 上游 provider（官方 API 或中转网关均可），并将每次请求完整留痕到 SQLite，便于审计与用量统计。
@@ -24,7 +24,8 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 
 ## 快速开始
 
-1. 在工作目录准备 `config.yaml`（格式见[配置说明](#配置说明)，该文件含密钥，已在 `.gitignore` 中排除）
+1. 准备 `config.yaml`（格式见[配置说明](#配置说明)）：放在 `./config.yaml`、`~/.config/llm-relay/config.yaml`，
+   或用 `-Dllm-relay.config=<path>` 指定（工作目录的该文件含密钥，已在 `.gitignore` 中排除）
 
 2. 启动服务：
 
@@ -33,10 +34,10 @@ sqlite-jdbc（存储）、SLF4J（日志）。
    mvn compile exec:java -Dexec.mainClass=aw.Server
 
    # 方式二：指定配置文件路径
-   mvn compile exec:java -Dexec.mainClass=aw.Server -Dllm-proxy.config=/path/to/config.yaml
+   mvn compile exec:java -Dexec.mainClass=aw.Server -Dllm-relay.config=/path/to/config.yaml
    ```
 
-   配置文件查找顺序：`-Dllm-proxy.config` 系统属性 → 当前目录 `./config.yaml` → classpath `/config.yaml`。
+   配置文件查找顺序：`-Dllm-relay.config` 系统属性 → 当前目录 `./config.yaml` → `$HOME/.config/llm-relay/config.yaml`。
 
 3. 验证：
 
@@ -48,18 +49,21 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 
 ```yaml
 server:
-  addr: ":18080"                 # 监听端口，支持 "18080" / ":18080"（不支持绑定特定网卡），缺省 8080
+  port: 18080                    # 监听端口（1-65535，缺省 18080）
+  host: 127.0.0.1                # 监听地址（缺省 127.0.0.1）
   connect_timeout_seconds: 30    # 上游连接超时（秒，缺省 30）
   request_timeout_seconds: 300   # 上游响应头超时（秒，缺省 300；不含 body 传输）
   read_idle_timeout_seconds: 300 # 上游 body 空闲读超时（秒，缺省 300；流式分片间隔超过该值即断流）
   client_api_keys:               # 客户端鉴权 key 列表；必填非空（缺省/为空启动报错，无免鉴权模式）；空白条目视为配置错误
     - "sk-client-xxx"
+  db_path: /data/llm-relay.db    # 数据库路径（可选）：文件或目录都认（./、已存在的目录 => 目录下的 llm-relay.db）
+                                 # 优先级低于 -Dllm-relay.db；两者都缺省时用 $HOME/.config/llm-relay/llm-relay.db
 
 providers:                       # 上游厂商列表，name 不可重复
   - name: xiaomi
     openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（必填，chat/responses/embeddings/rerank）
     anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）；可选，缺省回退 openai_base_url
-    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（清单见 llm-proxy-java/src/main/resources/key-required-domains.txt，351 家）时必填，否则启动报错
+    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（清单见 llm-relay-java/src/main/resources/key-required-domains.txt，351 家）时必填，否则启动报错
     supported_api_types: ["openai.chat.completions", "embeddings"]   # 必填非空；合法值: openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank；与 model.capability 联合做路由校验
   - name: bailian
     openai_base_url: "https://xxx/compatible-mode/v1"
@@ -110,8 +114,10 @@ models:                          # 对外模型列表，name 不可重复
 
 ## 会话审计（SQLite）
 
-数据写入工作目录下的 `sample.db`（WAL 模式），表结构见
-[`llm-proxy-java/src/main/resources/schema.sql`](llm-proxy-java/src/main/resources/schema.sql)。
+数据写入 SQLite（WAL 模式），路径三级优先：`-Dllm-relay.db` 系统属性 → `server.db_path`
+→ `$HOME/.config/llm-relay/llm-relay.db`（父目录不存在时自动创建）。`db_path` 写目录（如 `./`）
+则用该目录下的 `llm-relay.db`。表结构见
+[`llm-relay-java/src/main/resources/schema.sql`](llm-relay-java/src/main/resources/schema.sql)。
 
 `conversations`（每次请求一条）：
 
@@ -135,7 +141,7 @@ models:                          # 对外模型列表，name 不可重复
 ## 项目结构
 
 ```
-llm-proxy-java/
+llm-relay-java/
 ├── pom.xml                          # Java 25 + Maven
 └── src/main/
     ├── java/aw/
