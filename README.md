@@ -59,8 +59,8 @@ providers:                       # 上游厂商列表，name 不可重复
   - name: xiaomi
     openai_base_url: "https://xxx/v1"       # OpenAI 风格端点根地址（必填，chat/responses/embeddings/rerank）
     anthropic_base_url: "https://xxx/v1"    # Anthropic 风格端点根地址（messages）；可选，缺省回退 openai_base_url
-    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（openai.com、deepseek.com 等 27 家）时必填，否则启动报错
-    supported_api_types: ["openai.chat.completions", "embeddings"]   # 必填非空；合法值: openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank；与 model.capabilities 联合做路由校验
+    api_key: "sk-xxx"                        # 转发时以 Authorization: Bearer 携带；为空则不发该头（适合本地免 key 网关）；直连内置厂商域名（清单见 llm-proxy-java/src/main/resources/key-required-domains.txt，351 家）时必填，否则启动报错
+    supported_api_types: ["openai.chat.completions", "embeddings"]   # 必填非空；合法值: openai.chat.completions / openai.responses / anthropic.messages / embeddings / rerank；与 model.capability 联合做路由校验
   - name: bailian
     openai_base_url: "https://xxx/compatible-mode/v1"
     api_key: "sk-yyy"
@@ -69,10 +69,10 @@ providers:                       # 上游厂商列表，name 不可重复
 models:                          # 对外模型列表，name 不可重复，provider 必须已存在
   - name: mimo-v2.6-pro          # 对外暴露的模型名（客户端请求里填的名字）
     provider: xiaomi             # 路由到哪个 provider
-    upstream: MiMo-v2.6-Pro      # 发给上游的真实模型名，缺省等于 name
+    upstream: MiMo-v2.6-Pro      # 发给上游的真实模型名（必填，缺省启动报错）
     max_tokens: 32768            # 模型元数据，透出在 GET /v1/models（未配置为 null）
     context_length: 262144       # 上下文窗口元数据，透出在 GET /v1/models
-    capabilities: ["chat"]       # 必填非空；合法值: chat / embeddings / rerank；透出在 GET /v1/models；与 provider.supported_api_types 联合做路由校验（rerank/embeddings 需对应 apitype，chat 需至少一种 chat 格式）
+    capability: chat         # 必填（单值）；合法值: chat / embeddings / rerank；透出在 GET /v1/models；与 provider.supported_api_types 联合做路由校验（rerank/embeddings 需对应 apitype，chat 需至少一种 chat 格式）
 ```
 
 ## API 端点
@@ -92,7 +92,7 @@ models:                          # 对外模型列表，name 不可重复，prov
   CORS 策略为**任意来源放行**（anyHost）：浏览器里任意网页都能向本代理发起请求，实际防线是
   `client_api_keys` 鉴权——未启用鉴权时请勿将端口暴露到不可信网络
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
-- 请求体上限 50MB，超出返回 `413 Payload too large`（依据请求头 `Content-Length`；不带该头的分块请求不做此检查）
+- 请求体上限 100MB，超出返回 `413 Payload too large`（依据请求头 `Content-Length`；不带该头的分块请求不做此检查）
 - **头透传**：上游响应头透传给客户端（限流头 `x-ratelimit-*`、请求 ID 等，hop-by-hop 头除外）；
   客户端的 `anthropic-version` / `anthropic-beta` / `x-request-id` 请求头透传给上游
 - `usage` 解析尽力而为：流式响应从 SSE 分片中提取（chat.completions 流式由代理自动注入
@@ -134,12 +134,13 @@ llm-proxy-java/
 └── src/main/
     ├── java/aw/
     │   ├── Server.java              # 入口：装配 handler、注册路由
-    │   ├── config/ConfigLoader.java # config.yaml 加载与 fail-fast 校验
+    │   ├── config/                  # ConfigLoader(加载) + ProxyConfig(fail-fast 校验) + ApiType/Capability 枚举
     │   ├── db/ConversationStore.java# SQLite 审计存储（建表、迁移、写入）
     │   ├── httphandler/             # 各端点转发 handler（含 usage 解析）
     │   └── util/StringUtils.java
     └── resources/
         ├── schema.sql               # 建表语句
+        ├── key-required-domains.txt # 内置厂商域名清单（命中时 api_key 必填）
         └── simplelogger.properties  # SLF4J 日志配置
 ```
 
