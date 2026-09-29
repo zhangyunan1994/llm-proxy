@@ -65,7 +65,7 @@ public class Server {
       config.http.maxRequestSize = UpstreamHttpClient.MAX_BODY_BYTES;
       config.registerPlugin(new CorsPlugin((c -> c.addRule(CorsRule::anyHost))));
 
-      // 客户端鉴权：client_api_keys 非空时，转发端点要求合法 Bearer token（/v1/models 保持开放）
+      // 客户端鉴权：client_api_keys 非空时，/v1/* 全部路由（含 /v1/models）要求合法 Bearer token
       List<String> clientApiKeys = proxyConfig.getServer().getClientApiKeys();
 
       log.info("客户端鉴权已启用, 共 {} 个 client_api_keys", clientApiKeys.size());

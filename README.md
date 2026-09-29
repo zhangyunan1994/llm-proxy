@@ -7,7 +7,7 @@ Java 实现的 LLM API 网关。对外提供统一的 OpenAI / Anthropic 风格�
 
 - **统一入口**：5 个转发端点（chat.completions / responses / messages / embeddings / rerank），
   客户端无需感知上游差异
-- **客户端鉴权**：`client_api_keys` 非空时校验 `Authorization: Bearer`，恒定时间比较防时序侧信道
+- **客户端鉴权**：`/v1/*` 全部路由（含 `GET /v1/models`）校验 `Authorization: Bearer`，恒定时间比较防时序侧信道
 - **模型路由与名称映射**：对外模型名 → `provider + 上游真实模型名`，请求中的 `model` 字段自动替换
 - **SSE 流式透传**：逐块读取上游、逐块 flush 下发，保证流式体验
 - **会话审计**：SQLite 记录来源接口、token 用量（含缓存命中）、耗时、错误信息，记录失败不影响转发
@@ -41,7 +41,7 @@ sqlite-jdbc（存储）、SLF4J（日志）。
 3. 验证：
 
    ```bash
-   curl http://localhost:<端口>/v1/models
+   curl http://localhost:<端口>/v1/models -H "Authorization: Bearer <config.yaml 里的 client_api_key>"
    ```
 
 ## 配置说明
@@ -52,7 +52,7 @@ server:
   connect_timeout_seconds: 30    # 上游连接超时（秒，缺省 30）
   request_timeout_seconds: 300   # 上游响应头超时（秒，缺省 300；不含 body 传输）
   read_idle_timeout_seconds: 300 # 上游 body 空闲读超时（秒，缺省 300；流式分片间隔超过该值即断流）
-  client_api_keys:               # 客户端鉴权 key 列表；非空时启用鉴权，为空/缺省则不鉴权（启动时告警）；空白条目视为配置错误
+  client_api_keys:               # 客户端鉴权 key 列表；必填非空（缺省/为空启动报错，无免鉴权模式）；空白条目视为配置错误
     - "sk-client-xxx"
 
 providers:                       # 上游厂商列表，name 不可重复
@@ -93,10 +93,10 @@ models:                          # 对外模型列表，name 不可重复
 - 请求中未配置的 `model` 返回 `400 Invalid model`（model 名精确匹配，**区分大小写**）
 - **上游选路**：请求先筛出 `supported_api_types` 声明了本次端点 apiType 的 upstream 候选，
   再按 `lb_policy` 从候选里选一条（缺省 `first`）；候选为空返回 `400 Invalid model or provider`
-- **鉴权**：`client_api_keys` 非空时，5 个转发端点要求 `Authorization: Bearer <key>`（key 须在列表中），
-  缺失或不合法返回 `401 Unauthorized`；`/v1/models` 无需鉴权；CORS 预检（OPTIONS）放行。
+- **鉴权**：`client_api_keys` 非空时，`/v1/*` 下全部路由（5 个转发端点 + `GET /v1/models`）要求
+  `Authorization: Bearer <key>`（key 须在列表中），缺失或不合法返回 `401 Unauthorized`；CORS 预检（OPTIONS）放行。
   CORS 策略为**任意来源放行**（anyHost）：浏览器里任意网页都能向本代理发起请求，实际防线是
-  `client_api_keys` 鉴权——未启用鉴权时请勿将端口暴露到不可信网络
+  `client_api_keys` 鉴权——请勿泄露 key，也请勿将端口暴露到不可信网络
 - 可选请求头 `X-Session-Id`：客户端会话标识，落入 `conversations.session_id`，用于关联同一会话的多次调用
 - 请求体上限 100MB，超出返回 `413 Payload too large`（依据请求头 `Content-Length`；不带该头的分块请求不做此检查）
 - **头透传**：上游响应头透传给客户端（限流头 `x-ratelimit-*`、请求 ID 等，hop-by-hop 头除外）；
